@@ -14,6 +14,8 @@ final/results/
 final/Experiment/reports/
 final/data/
 final/checkpoints/
+keypoint_extractor/checkpoints/
+keypoint_extractor/mmpose/
 
 *.log
 .DS_Store

@@ -1,0 +1,10 @@
+opencv-python
+numpy
+json_tricks
+matplotlib
+munkres
+pillow
+scipy
+xtcocotools>=1.12
+mmengine
+mmdet

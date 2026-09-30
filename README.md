@@ -11,6 +11,7 @@ final/code/                         Code train, test, demo
 final/data/Input/                   Không commit; cần tải/copy riêng
 final/data/Output/checkpoints/      Không commit; cần tải/copy riêng nếu muốn test/demo ngay
 final/scripts/                      Script vẽ confusion matrix
+keypoint_extractor/                 Script trích xuất keypoint RTMW-L từ video
 requirements.txt                    Thư viện Python cần cài
 scripts/verify_repo.py              Kiểm tra nhanh dữ liệu/checkpoint bắt buộc
 scripts/run_train_fusion.ps1        Chạy lại train mô hình fusion chính
@@ -39,6 +40,49 @@ Gợi ý cách chia sẻ:
 - Sau khi tải về, giải nén/copy đúng cấu trúc trên.
 
 Nếu bạn thật sự muốn commit data lên GitHub, hãy dùng Git LFS. Tuy nhiên bản repo mặc định này đã ignore `final/data/`.
+
+## Extract keypoint từ video gốc
+
+Nếu chỉ train/test từ `final/data/Input/keypoint_tensor_cache` có sẵn thì không cần bước này.
+
+Nếu muốn tự trích xuất keypoint từ video gốc, dùng thư mục:
+
+```text
+keypoint_extractor/
+```
+
+Thư mục này đã có:
+
+```text
+extract_single_video.py
+run_rtmw_splits_dual.py
+requirements.txt
+README.md
+```
+
+Không commit kèm `mmpose/` và weight RTMW-L vì khá nặng. Người dùng cần tự chuẩn bị:
+
+```text
+keypoint_extractor/mmpose/
+keypoint_extractor/checkpoints/rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth
+```
+
+Xem hướng dẫn chi tiết trong:
+
+```text
+keypoint_extractor/README.md
+```
+
+Ví dụ chạy một video:
+
+```powershell
+cd keypoint_extractor
+python extract_single_video.py `
+  --input-video "C:\path\to\video.mp4" `
+  --output-json ".\outputs\video_keypoints.json" `
+  --device cuda:0 `
+  --pretty
+```
 
 ## Cài đặt
 
