@@ -1,51 +1,50 @@
-# Huong dan tai hien ket qua va chay demo
+# Hướng Dẫn Tái Hiện Kết Quả Và Chạy Demo
 
-Chay tat ca lenh tu thu muc goc project:
-
-```powershell
-cd C:\Thanh\HUST\20252\DATN\w3\test_method
-```
-
-## 1. Cai dat
-
-Dung moi truong Python da co:
+Chạy tất cả lệnh từ thư mục gốc project:
 
 ```powershell
-.\.venv\Scripts\activate
+cd C:\path\to\dynamic_hand_gesture_recognition
 ```
 
-Neu tao moi moi truong:
+## 1. Cài Đặt
+
+Dùng môi trường Python:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
-pip install torch torchvision torchaudio gradio opencv-python numpy pandas pyyaml tqdm matplotlib scikit-learn networkx
+pip install -r requirements.txt
 ```
 
-Can co cac thu muc/file sau:
+Nếu dùng GPU NVIDIA, nên cài PyTorch theo đúng bản CUDA của máy. Sau đó kiểm tra:
+
+```powershell
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+## 2. Chuẩn Bị Data Và Checkpoint
+
+Repo mặc định không commit data/checkpoint để tránh quá nặng. Trước khi train/test/demo, cần copy hoặc giải nén dữ liệu vào đúng cấu trúc:
 
 ```text
-final/code
-final/data/Input/keypoint_tensor_cache
-final/data/Input/instance_graphs
-final/data/Input/template_graphs
+final/data/Input/keypoint_tensor_cache/
+final/data/Input/instance_graphs/
+final/data/Input/template_graphs/
 final/data/Input/train.txt
 final/data/Input/val.txt
 final/data/Input/test_1229.txt
-final/data/Output/checkpoints
+final/data/Output/checkpoints/
 ```
 
-Neu chay demo tu video goc, can them:
+Kiểm tra nhanh:
 
-```text
-run_rtmw_splits_dual.py
-mmpose
-checkpoints/rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth
+```powershell
+python scripts\verify_repo.py
 ```
 
-## 2. Tai hien ket qua training
+Nếu đủ file cần thiết, script sẽ báo `OK`.
 
-Kich ban 1 - Neural-only:
+## 3. Train Neural-Only
 
 ```powershell
 .\.venv\Scripts\python.exe final\code\neural_only_experiments\train_neural_only.py `
@@ -58,7 +57,9 @@ Kich ban 1 - Neural-only:
   --device cuda:0
 ```
 
-Kich ban 2 - V4 KG-only:
+Nếu không có GPU, đổi `cuda:0` thành `cpu`.
+
+## 4. Train KG-Only
 
 ```powershell
 .\.venv\Scripts\python.exe final\code\src_neurosymbolic\train_cross_attention_v4.py `
@@ -75,7 +76,9 @@ Kich ban 2 - V4 KG-only:
   --device cuda:0
 ```
 
-Kich ban 3 - Neuro-symbolic fusion:
+## 5. Train Neuro-Symbolic Fusion
+
+Đây là kịch bản chính của mô hình cuối:
 
 ```powershell
 .\.venv\Scripts\python.exe final\code\src_neurosymbolic\train_cross_attention_v4.py `
@@ -91,11 +94,21 @@ Kich ban 3 - Neuro-symbolic fusion:
   --device cuda:0
 ```
 
-Checkpoint sau train nam trong thu muc `output-dir`, gom `best.pt`, `last.pt`, `history.json`.
+Hoặc chạy script gọn ở thư mục gốc:
 
-## 3. Tai hien ket qua test
+```powershell
+.\scripts\run_train_fusion.ps1
+```
 
-Kich ban 1 - Neural-only:
+Checkpoint sau khi train nằm trong `output-dir`, gồm:
+
+```text
+best.pt
+last.pt
+history.json
+```
+
+## 6. Test Neural-Only
 
 ```powershell
 .\.venv\Scripts\python.exe final\code\neural_only_experiments\test_neural_only.py `
@@ -108,7 +121,7 @@ Kich ban 1 - Neural-only:
   --output final\Experiment\reports\packaged_test_neural_only.json
 ```
 
-Kich ban 2 - V4 KG-only:
+## 7. Test KG-Only
 
 ```powershell
 .\.venv\Scripts\python.exe final\code\src_neurosymbolic\test_cross_attention_v2.py `
@@ -125,7 +138,7 @@ Kich ban 2 - V4 KG-only:
   --output final\Experiment\reports\packaged_test_kg_guided
 ```
 
-Kich ban 3 - Neuro-symbolic fusion:
+## 8. Test Neuro-Symbolic Fusion
 
 ```powershell
 .\.venv\Scripts\python.exe final\code\src_neurosymbolic\test_cross_attention_v2.py `
@@ -142,50 +155,41 @@ Kich ban 3 - Neuro-symbolic fusion:
   --output final\Experiment\reports\packaged_test_fusion_best_test
 ```
 
-Moi lenh test tao them file prediction, per-class va confusion matrix trong `final/results`.
-
-## 4. Chay demo UI
+Hoặc chạy script gọn ở thư mục gốc:
 
 ```powershell
-.\.venv\Scripts\python.exe final\code\src_neurosymbolic\demo_ui\app.py `
-  --server-name 127.0.0.1 `
-  --server-port 7860
+.\scripts\run_test_fusion.ps1
 ```
 
-Mo trinh duyet:
+## 9. Chạy Demo UI
+
+```powershell
+.\scripts\run_demo_ui.ps1
+```
+
+Sau đó mở trình duyệt:
 
 ```text
 http://127.0.0.1:7860
 ```
 
-Trong UI, chon mot trong ba kich ban:
+## 10. Trích Xuất Keypoint Từ Video Gốc
+
+Nếu muốn chạy từ video gốc, xem hướng dẫn trong:
 
 ```text
-Kich ban 1 - Neural-only
-Kich ban 2 - V4 KG-only
-Kich ban 3 - Neuro-symbolic fusion
+keypoint_extractor/README.md
 ```
 
-Sau do upload video va bam `Run Model Prediction`.
+Cần chuẩn bị thêm MMPose và weight RTMW-L:
 
-## 5. Chay demo bang lenh
-
-```powershell
-.\.venv\Scripts\python.exe final\code\src_neurosymbolic\demo_video_v4.py `
-  --input-video "C:\Users\ADMIN\Pictures\Camera Roll\WIN_20260706_12_16_48_Pro.mp4" `
-  --checkpoint final\data\Output\checkpoints\cross_attention_v4_template170_retrain_next\best_test.pt `
-  --template-dir final\data\Input\template_graphs `
-  --output-dir final\outputs\demo_video_v4 `
-  --device cuda:0 `
-  --extract-script run_rtmw_splits_dual.py `
-  --mmpose-root mmpose `
-  --pose-weights checkpoints\rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth
+```text
+keypoint_extractor/mmpose/
+keypoint_extractor/checkpoints/rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth
 ```
 
-Ket qua demo luu trong `final/outputs/demo_video_v4` hoac `final/outputs/demo_ui_v4`.
+## 11. Lưu Ý
 
-## 6. Luu y
-
-- Neu khong co GPU, doi `cuda:0` thanh `cpu`.
-- Buoc RTMW extract keypoint tu video goc se cham hon buoc du doan.
-- Neu UI van hien giao dien cu, tat server va refresh trinh duyet bang `Ctrl + F5`.
+- Nếu không có GPU, đổi `cuda:0` thành `cpu`.
+- Bước trích xuất keypoint từ video gốc chậm hơn nhiều so với bước train/test trên cache.
+- Nếu UI vẫn hiện giao diện cũ, tắt server và refresh trình duyệt bằng `Ctrl + F5`.

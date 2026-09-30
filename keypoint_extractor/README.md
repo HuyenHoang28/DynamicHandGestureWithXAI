@@ -1,19 +1,19 @@
 # RTMW-L Keypoint Extractor
 
-Thu muc nay gom cac file can thiet de trich xuat keypoint tu video bang RTMW-L/MMPose.
+Thư mục này chứa các script cần thiết để trích xuất keypoint từ video bằng RTMW-L/MMPose.
 
-## Thu muc trong repo
+## Nội Dung Trong Repo
 
-- `run_rtmw_splits_dual.py`: script chinh, dung cho ca dataset.
-- `extract_single_video.py`: wrapper gon de chay mot video ra mot file JSON.
-- `requirements.txt`: goi Python phu tro. `torch`, `mmcv`, `mmdet`, `mmengine` nen cai theo dung CUDA cua may.
+- `run_rtmw_splits_dual.py`: script chính, dùng để trích xuất keypoint cho cả dataset.
+- `extract_single_video.py`: wrapper gọn để chạy một video và xuất ra một file JSON.
+- `requirements.txt`: các gói Python phụ trợ. `torch`, `mmcv`, `mmdet`, `mmengine` nên được cài theo đúng phiên bản CUDA của máy.
 
-Hai thanh phan nang sau khong commit len GitHub. Can tai/copy rieng truoc khi extract:
+Hai thành phần nặng sau không được commit lên GitHub. Cần tải hoặc copy riêng trước khi extract:
 
-- `mmpose/`: source MMPose can cho `MMPoseInferencer`, config RTMW-L va metainfo COCO-WholeBody.
+- `mmpose/`: source MMPose cần cho `MMPoseInferencer`, config RTMW-L và metadata COCO-WholeBody.
 - `checkpoints/rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth`: weight RTMW-L.
 
-Script chi giu 52 keypoint can dung: mat/mui/vai/khuu tay/co tay va 21 khop moi ban tay. Output JSON co dang theo frame:
+Script chỉ giữ 52 keypoint cần dùng: mặt/mũi/vai/khuỷu tay/cổ tay và 21 khớp mỗi bàn tay. Output JSON có dạng theo frame:
 
 ```json
 [
@@ -30,30 +30,30 @@ Script chi giu 52 keypoint can dung: mat/mui/vai/khuu tay/co tay va 21 khop moi 
 ]
 ```
 
-## Cai dat moi truong
+## Cài Đặt Môi Trường
 
-Nen dung Python 3.10 hoac 3.11. Vi du tren Windows PowerShell:
+Nên dùng Python 3.10 hoặc 3.11. Ví dụ trên Windows PowerShell:
 
 ```powershell
-cd keypoint_extractor_package
+cd keypoint_extractor
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
 ```
 
-Neu may co GPU NVIDIA, cai PyTorch ban CUDA phu hop. Vi du CUDA 12.1:
+Nếu máy có GPU NVIDIA, cài PyTorch bản CUDA phù hợp. Ví dụ CUDA 12.1:
 
 ```powershell
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
-Neu chi chay CPU:
+Nếu chỉ chạy CPU:
 
 ```powershell
 python -m pip install torch torchvision
 ```
 
-Cai cac goi OpenMMLab va MMPose local:
+Cài các gói OpenMMLab và MMPose local:
 
 ```powershell
 python -m pip install -U openmim
@@ -62,15 +62,15 @@ python -m pip install -r requirements.txt
 python -m pip install -e .\mmpose
 ```
 
-Kiem tra nhanh:
+Kiểm tra nhanh:
 
 ```powershell
 python -c "from mmpose.apis import MMPoseInferencer; print('MMPose OK')"
 ```
 
-## Chay mot video
+## Chạy Một Video
 
-Dat video o dau cung duoc, roi chay:
+Đặt video ở đâu cũng được, rồi chạy:
 
 ```powershell
 python extract_single_video.py `
@@ -80,30 +80,30 @@ python extract_single_video.py `
   --pretty
 ```
 
-Neu khong co GPU, doi `--device cuda:0` thanh:
+Nếu không có GPU, đổi `--device cuda:0` thành:
 
 ```powershell
 --device cpu
 ```
 
-Mac dinh script se tim:
+Mặc định script sẽ tìm:
 
-- MMPose tai `.\mmpose`
-- weight tai `.\checkpoints\rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth`
-- config tai `.\mmpose\projects\rtmpose\rtmpose\wholebody_2d_keypoint\rtmw-l_8xb320-270e_cocktail14-384x288.py`
+- MMPose tại `.\mmpose`
+- weight tại `.\checkpoints\rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth`
+- config tại `.\mmpose\projects\rtmpose\rtmpose\wholebody_2d_keypoint\rtmw-l_8xb320-270e_cocktail14-384x288.py`
 
-Neu dat cac file o noi khac, truyen them:
+Nếu đặt các file ở nơi khác, truyền thêm:
 
 ```powershell
 --mmpose-root "C:\path\to\mmpose" `
 --pose-weights "C:\path\to\rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth"
 ```
 
-## Chay ca dataset
+## Chạy Cả Dataset
 
-Script goc ho tro hai kieu layout.
+Script gốc hỗ trợ hai kiểu layout.
 
-### Layout raw-subjects
+### Layout `raw-subjects`
 
 Input:
 
@@ -115,7 +115,7 @@ dataset_root/
       video_2.mp4
 ```
 
-Lenh chay:
+Lệnh chạy:
 
 ```powershell
 python run_rtmw_splits_dual.py `
@@ -136,7 +136,7 @@ output_keypoints/
       video_1.json
 ```
 
-### Layout splits
+### Layout `splits`
 
 Input:
 
@@ -154,7 +154,7 @@ dataset_root/
     test/
 ```
 
-Lenh chay:
+Lệnh chạy:
 
 ```powershell
 python run_rtmw_splits_dual.py `
@@ -167,7 +167,7 @@ python run_rtmw_splits_dual.py `
   --pretty
 ```
 
-Output mac dinh:
+Output mặc định:
 
 ```text
 dataset_root/
@@ -175,9 +175,9 @@ dataset_root/
   keypoints_new/
 ```
 
-## Ghi chu
+## Ghi Chú
 
-- Neu file JSON da ton tai, script se bo qua. Them `--overwrite` de trich lai.
-- Mac dinh co swap ten left/right cho video bi mirror. Them `--no-mirror-swap` neu khong muon swap.
-- Video ho tro: `.mp4`, `.avi`, `.mov`, `.mkv`.
-- Chay GPU se nhanh hon CPU rat nhieu.
+- Nếu file JSON đã tồn tại, script sẽ bỏ qua. Thêm `--overwrite` để trích xuất lại.
+- Mặc định có swap tên left/right cho video bị mirror. Thêm `--no-mirror-swap` nếu không muốn swap.
+- Video hỗ trợ: `.mp4`, `.avi`, `.mov`, `.mkv`.
+- Chạy bằng GPU sẽ nhanh hơn CPU rất nhiều.
