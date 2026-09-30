@@ -1,0 +1,14 @@
+torch
+torchvision
+torchaudio
+numpy
+pandas
+pyyaml
+tqdm
+matplotlib
+scikit-learn
+networkx
+opencv-python
+gradio
+plotly
+imageio-ffmpeg
