@@ -1,4 +1,4 @@
-# Kế hoạch 3 người: chạy project trên IPN Hand
+# Kế hoạch 3 người: thử nghiệm project trên IPN Hand
 
 ## Mục tiêu và phạm vi
 
@@ -32,14 +32,29 @@ Giữ train/test chính thức của IPN: **148 video từ 37 người train, 52
 
 Đặt tên clip duy nhất, ví dụ `1CM1_1_R_217_G10_f000029_f000072.avi`. Manifest tối thiểu phải lưu: video nguồn, subject, split, nhãn IPN, ID 0–12, frame bắt đầu/kết thúc, đường dẫn clip và đường dẫn keypoint. Mọi output mới của IPN đặt ở thư mục riêng; không ghi đè dữ liệu và template 27 lớp hiện có.
 
-## Người 1 — video, split và chất lượng dữ liệu
+## Phân công cân bằng và cách làm song song
+
+| Người | Chịu trách nhiệm chính | Bàn giao cuối |
+|---|---|---|
+| 1 — Dữ liệu | Video, split, công cụ cắt toàn bộ clip, trích keypoint và kiểm tra chất lượng | Clip/keypoint/manifest train–val–test có thể tái tạo |
+| 2 — Mô hình và đo kết quả | Train neural-only 13 lớp, chọn checkpoint, tính metric và phân tích lỗi | Baseline cùng báo cáo đúng/sai trên test |
+| 3 — Template và V4 | Thiết kế 13 template, kiểm tra predicate/event, train V4 và so sánh với baseline | Graph IPN, checkpoint V4 và bảng so sánh |
+
+Ba người **bắt đầu song song**. Người 1 giải nén và bàn giao sớm ít nhất một clip mỗi lớp. Trong lúc đó người 2 chuẩn bị pipeline train/metric trên một tập nhỏ, người 3 mô tả động tác và kiểm tra predicate/event. Việc train toàn bộ của người 2 chỉ chờ manifest/keypoint hoàn chỉnh; việc train V4 của người 3 chờ cả dữ liệu lẫn template được xác nhận.
+
+Phần xem clip bằng mắt chia đều theo **4–4–5 lớp**, thay vì dồn cho một người: người 1 kiểm tra B0A, B0B, G01, G02; người 2 kiểm tra G03–G06; người 3 kiểm tra G07–G11. Mỗi người ghi các clip có nhãn/cắt sai hoặc keypoint bất thường; người 1 tổng hợp lỗi dữ liệu, người 3 tổng hợp lỗi template. Đây là kiểm tra mẫu, không thay thế kiểm tra tự động toàn bộ clip.
+
+## Người 1 — dữ liệu, clip và keypoint
 
 **Việc làm**
 
 1. Kiểm kê và giải nén dữ liệu. Trên máy hiện tại, `external_data` đã có ba ZIP video chứa `videos01.tgz`–`videos05.tgz` và một ZIP annotation. Chỉ tải thêm từ [trang chính thức](https://gibranbenitez.github.io/IPN_Hand/) nếu thiếu file; tránh tải lại khoảng 4,6 GB không cần thiết.
 2. Đối chiếu video giải nén với `Video_TrainList.txt`, `Video_TestList.txt` và `metadata.csv`. Mục tiêu: 200 video mở được, 148 train, 52 test, không trùng video/người giữa hai split.
 3. Chọn validation theo người từ nhóm train. Ghi danh sách subject và seed/quy tắc chọn để cả nhóm tái lập được.
-4. Khảo sát video khó: tay trái/phải, ánh sáng tối, nền lộn xộn, nhiều người; gửi ví dụ cho người 2 và 3 để kiểm tra pipeline/template.
+4. Đọc `Annot_TrainList.txt`/`Annot_TestList.txt`. Mỗi dòng có dạng `video,label,id,t_start,t_end,frames`. Với 13 lớp, bỏ `D0X`, giữ B0A/B0B/G01–G11. Cắt từ `t_start` **đến cả** `t_end`; nếu dùng OpenCV thì seek đến frame `t_start - 1`. Kiểm tra tự động `decoded_frames == t_end - t_start + 1 == frames` cho mọi clip.
+5. Tạo clip/manifest train–val–test theo subject đã chốt. Đặt tên clip duy nhất và giữ mapping ID 0–12 ở trên. Bàn giao **một clip mỗi lớp càng sớm càng tốt** để người 2 và 3 tiếp tục làm song song.
+6. Trích xuất RTMW keypoint, ghi tỷ lệ frame không phát hiện người/không đủ hai vai, rồi precompute tensor 64 frame. Kiểm tra trên vài clip xem có cần `--no-mirror-swap`; dùng cùng quy ước trái/phải cho ba split. `valid=100%` chỉ nói đủ anchor chuẩn hóa, không chứng minh keypoint chính xác 100%.
+7. Khảo sát video khó: tay trái/phải, ánh sáng tối, nền lộn xộn, nhiều người; chia sẻ ví dụ và lỗi dữ liệu cho cả nhóm.
 
 **Lệnh giải nén tham khảo (PowerShell, chạy từ thư mục gốc project):**
 
@@ -55,19 +70,6 @@ Get-ChildItem "$ipnRoot\videos" -Filter '*.tgz' -File |
 ```
 
 Lệnh cuối kỳ vọng `200`. Các tệp nguồn trên máy hiện có đuôi `.avi` bên trong `.tgz`; kiểm tra file thực tế thay vì giả định đuôi `.mp4` theo mô tả trang tải.
-
-**Bàn giao/nghiệm thu:** danh sách 200 video với split và subject; danh sách validation theo người; biên bản video thiếu/hỏng (nếu có); vài video mẫu cho mỗi điều kiện khó. Không bắt đầu đánh giá nếu train/test có subject trùng nhau.
-
-## Người 2 — cắt clip, nhãn, keypoint và baseline
-
-**Việc làm**
-
-1. Đọc `Annot_TrainList.txt`/`Annot_TestList.txt`. Mỗi dòng có dạng `video,label,id,t_start,t_end,frames`. Với 13-class isolated classification, bỏ `D0X`, giữ đủ các dòng B0A/B0B/G01–G11.
-2. Cắt clip từ `t_start` **đến cả** `t_end`. Annotation đánh số từ 1; nếu dùng OpenCV thì seek đến frame `t_start - 1`. Xác nhận `decoded_frames == t_end - t_start + 1 == frames` trên mọi clip.
-3. Tạo `train`, `val`, `test` theo danh sách subject của người 1. Không tách validation từ test. Tạo manifest với mapping ID ở trên và tên file duy nhất.
-4. Mở và kiểm tra bằng mắt ít nhất vài clip mỗi lớp, ưu tiên cặp dễ nhầm: G01/G08, G02/G09, G03/G04, G05/G06, G10/G11. Kiểm tra tay không bị mất ở đầu/cuối clip.
-5. Trích xuất RTMW keypoint, ghi tỷ lệ frame không phát hiện người/không đủ hai vai, rồi precompute tensor 64 frame. Không gọi `valid=100%` là keypoint chính xác 100%; đó chỉ là điều kiện để chuẩn hóa.
-6. Train **neural-only 13 lớp** làm baseline. Chọn checkpoint theo validation, sau đó chạy test một lần và báo accuracy, macro-F1, per-class precision/recall và confusion matrix.
 
 Thư mục clip nên theo layout mà extractor hỗ trợ, ví dụ `external_data/ipn_processed/clips/train/G10/Subject01/<clip>.avi`; tương tự cho `val` và `test`. Với máy đã cài dependencies và checkpoint RTMW như workspace hiện tại, lệnh trích một split là:
 
@@ -93,6 +95,18 @@ external_data/ipn_processed/keypoints/train/G10/Subject03/clip_002.json 0 11
 
 Cột cuối là label ID. Đường dẫn cần chứa `train/<nhãn>/...`, `val/<nhãn>/...` hoặc `test/<nhãn>/...`, vì code đọc tên nhãn từ đường dẫn. Dùng đúng một mapping cho cả ba split. Hai file train/val/test thực tế phải được tạo từ annotation; không lấy `train.txt` hiện có của bộ 27 lớp.
 
+**Bàn giao/nghiệm thu:** danh sách 200 video với split và subject; clip và manifest đúng frame/nhãn; thống kê số clip mỗi lớp và split; tỷ lệ keypoint hợp lệ; danh sách video/clip lỗi. Không bắt đầu đánh giá nếu train/test có subject trùng nhau hoặc số frame không khớp annotation.
+
+## Người 2 — baseline neural-only và đánh giá
+
+**Việc làm**
+
+1. Kiểm tra mapping ID, số mẫu mỗi lớp và đường dẫn train/val/test trong manifest do người 1 bàn giao. Chuẩn bị lệnh train và bộ tính metric trên tập clip mẫu ngay khi nhận được một clip mỗi lớp.
+2. Xây báo cáo đánh giá: accuracy, macro-F1, precision/recall từng lớp, confusion matrix và prediction từng clip. Bổ sung phép kiểm tra để không so sánh nhầm ID 0–12 với ID gốc 1–14 của IPN.
+3. Train **neural-only 13 lớp** trên train, chọn checkpoint bằng validation. Chỉ khi đã chốt checkpoint và cách tính metric mới chạy test chính thức; không chỉnh hyperparameter dựa trên kết quả test.
+4. Phân tích các cặp dễ nhầm và kiểm tra bằng mắt các lớp G03–G06 đã nhận phân công. Gửi trường hợp lỗi điển hình cho người 3 đối chiếu template.
+5. Bàn giao checkpoint, cấu hình/lệnh chạy, seed và báo cáo để người 3 dùng cùng split khi so sánh V4.
+
 **Lệnh train baseline sau khi đã có keypoint cache và manifest:**
 
 ```powershell
@@ -108,17 +122,18 @@ Cột cuối là label ID. Đường dẫn cần chứa `train/<nhãn>/...`, `va
 
 Máy hiện tại chưa phát hiện CUDA; nếu chạy ở máy này, thay `cuda:0` bằng `cpu`, nhưng trích xuất và train toàn bộ IPN sẽ chậm. Script thử 16 clip `scripts/prepare_ipn_smoke.py` **không** chuẩn bị toàn bộ 5.649 annotation, không được dùng nó làm pipeline train chính thức.
 
-**Bàn giao/nghiệm thu:** clip và manifest đúng frame/nhãn; thống kê số clip mỗi lớp và split; tỷ lệ keypoint hợp lệ; checkpoint baseline chọn bằng validation; báo cáo test kèm prediction từng clip. Không báo accuracy nếu chưa kiểm tra nhãn và không gian đầu ra.
+**Bàn giao/nghiệm thu:** checkpoint baseline chọn bằng validation; báo cáo test với prediction từng clip và ít nhất accuracy, macro-F1, metric từng lớp, confusion matrix. Không báo accuracy nếu nhãn đầu ra không cùng hệ với IPN.
 
-## Người 3 — thiết kế và kiểm định template graph IPN
+## Người 3 — template graph IPN và đánh giá V4
 
 **Việc làm**
 
 1. Xem ví dụ video của từng nhãn từ [IPN Hand](https://gibranbenitez.github.io/IPN_Hand/) và clip đã cắt. Viết mô tả gồm tư thế đầu, chuyển động, tư thế cuối và tín hiệu phân biệt với lớp gần giống. Ví dụ G01/G08 khác ở số lần click; G10/G11 khác ở chiều biến đổi khoảng cách/động tác zoom.
-2. Kiểm tra [extract_predicates.py](../final/code/src_neurosymbolic/predicates/extract_predicates.py) và [build_events.py](../final/code/src_neurosymbolic/events/build_events.py): chỉ dùng predicate/event mà code **thực sự tạo được**. Nếu thiếu tín hiệu để phân biệt một lớp, ghi rõ khoảng trống; không tự đặt tên event mới trong template rồi kỳ vọng matcher tìm thấy.
-3. Viết file `gesture_templates.yaml` cho 13 nhãn IPN theo cú pháp mà [build_template_graph.py](../final/code/src_neurosymbolic/kg/build_template_graph.py) hỗ trợ: `gestures`, `expected_events`, `subject`, nhóm `motions`/`hand_shapes`/`finger_motions`/`positions`..., mức `required`/`preferred`/`optional`, và `negative_evidence` khi có căn cứ. File nguồn YAML cho 27 nhãn cũ **không có trong workspace hiện tại**; có thể xem các JSON cũ trong `final/data/Input/template_graphs` để tham khảo cấu trúc, nhưng không sao chép rồi đổi tên.
+2. Kiểm tra [extract_predicates.py](../../final/code/src_neurosymbolic/predicates/extract_predicates.py) và [build_events.py](../../final/code/src_neurosymbolic/events/build_events.py): chỉ dùng predicate/event mà code **thực sự tạo được**. Nếu thiếu tín hiệu để phân biệt một lớp, ghi rõ khoảng trống; không tự đặt tên event mới trong template rồi kỳ vọng matcher tìm thấy.
+3. Viết file `gesture_templates.yaml` cho 13 nhãn IPN theo cú pháp mà [build_template_graph.py](../../final/code/src_neurosymbolic/kg/build_template_graph.py) hỗ trợ: `gestures`, `expected_events`, `subject`, nhóm `motions`/`hand_shapes`/`finger_motions`/`positions`..., mức `required`/`preferred`/`optional`, và `negative_evidence` khi có căn cứ. File nguồn YAML cho 27 nhãn cũ **không có trong workspace hiện tại**; có thể xem các JSON cũ trong `final/data/Input/template_graphs` để tham khảo cấu trúc, nhưng không sao chép rồi đổi tên.
 4. Sinh 13 graph vào `external_data/ipn_processed/template_graphs`, không ghi đè `final/data/Input/template_graphs`. Cấp đúng `label_id` từ manifest; không tin rằng `labels.yaml` tự quyết định ID, vì loader hiện tại lấy ID từ các split file.
 5. Kiểm tra `index.json` có đúng 13 nhãn, ID 0–12 liên tục, mỗi graph có event/requirement hợp lệ. Chạy thử matcher trên clip mẫu của lớp đó và các lớp dễ nhầm; ghi cả trường hợp template thất bại.
+6. Sau khi người 1 bàn giao dữ liệu và người 2 có baseline, train V4 với 13 nhãn/template trên **đúng cùng train/val/test**. Chọn checkpoint theo validation, chấm test bằng metric giống người 2 rồi báo phần cải thiện/suy giảm theo từng lớp.
 
 Ví dụ cú pháp tối thiểu cho một phần file YAML, **chỉ để minh họa định dạng**; cần kiểm tra event này thực sự xuất hiện trong clip G03 trước khi dùng làm template cuối:
 
@@ -146,17 +161,17 @@ gestures:
   --pretty
 ```
 
-**Bàn giao/nghiệm thu:** bảng nhãn–định nghĩa–predicate/event; 13 graph và index đúng mapping; bằng chứng template nhận ra ví dụ đúng và phân biệt lớp gần giống; danh sách predicate/event còn thiếu nếu có. Không đánh giá template bằng cách sửa theo kết quả trên test split.
+**Bàn giao/nghiệm thu:** bảng nhãn–định nghĩa–predicate/event; 13 graph và index đúng mapping; bằng chứng template nhận ra ví dụ đúng và phân biệt lớp gần giống; danh sách predicate/event còn thiếu nếu có; checkpoint V4 và bảng so sánh metric với neural-only. Không sửa template dựa trên kết quả test split.
 
 ## Mốc ghép việc và báo cáo cuối
 
-1. **Mốc A — dữ liệu:** Người 1 xác nhận video và split; người 2 bàn giao ít nhất một clip chuẩn mỗi lớp. Người 3 có thể bắt đầu viết mô tả cử chỉ ngay từ đây.
-2. **Mốc B — baseline:** Người 2 hoàn tất keypoint/manifest, train neural-only, báo kết quả validation và test. Đây là mốc tối thiểu để trả lời thầy “model nhận đúng bao nhiêu trên IPN”.
-3. **Mốc C — V4:** Người 3 bàn giao 13 template đã kiểm định. Nhóm train V4 trên cùng train/val/test và so sánh với neural-only; giữ cách chọn checkpoint theo validation.
+1. **Mốc A — dữ liệu mẫu:** Người 1 xác nhận video và split rồi bàn giao ít nhất một clip chuẩn mỗi lớp. Người 2 thử pipeline train/metric; người 3 kiểm tra tín hiệu và phác thảo template song song.
+2. **Mốc B — toàn bộ dữ liệu:** Người 1 bàn giao clip, keypoint và manifest train/val/test. Người 2 train neural-only, báo kết quả validation và test. Đây là mốc tối thiểu để trả lời thầy “model nhận đúng bao nhiêu trên IPN”.
+3. **Mốc C — V4:** Người 3 bàn giao 13 template đã kiểm định, train V4 trên cùng split rồi so sánh với neural-only; giữ cách chọn checkpoint theo validation.
 4. **Mốc D — báo cáo:** Ghi kích thước từng split, mapping nhãn, số frame/keypoint lỗi, hyperparameter, accuracy, macro-F1, confusion matrix, lỗi điển hình và giới hạn. Phân biệt rõ kết quả **isolated classification** với bài toán **continuous recognition**.
 
 Tiêu chí hoàn thành: manifest–checkpoint–template thống nhất 13 nhãn; không rò rỉ người giữa các split; clip đúng annotation; metric được tính trên test chính thức; thí nghiệm chạy lại được bằng lệnh và cấu hình đã lưu.
 
 ## Lưu ý khi chia sẻ qua Git
 
-File hướng dẫn này nằm trong `docs/` và **không bị `.gitignore` bỏ qua**, có thể commit. Dữ liệu `external_data/`, checkpoint và output thử nghiệm đang bị Git ignore để không đẩy hàng GB video lên repository. Nếu ba người làm trên các máy khác nhau, chia sẻ dữ liệu qua ổ chung/Drive và giữ manifest, mapping, phiên bản script giống nhau; đừng giả định `git pull` sẽ mang theo video đã giải nén.
+File hướng dẫn này nằm trong `docs/test_thu_voi_bo_IPN/` và **không bị `.gitignore` bỏ qua**, có thể commit. Dữ liệu `external_data/`, checkpoint và output thử nghiệm đang bị Git ignore để không đẩy hàng GB video lên repository. Nếu ba người làm trên các máy khác nhau, chia sẻ dữ liệu qua ổ chung/Drive và giữ manifest, mapping, phiên bản script giống nhau; đừng giả định `git pull` sẽ mang theo video đã giải nén.
