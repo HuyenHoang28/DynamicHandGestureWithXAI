@@ -26,6 +26,26 @@ Ví dụ `1CM1_1_R_#217`: metadata ghi 3.855 frame, giải mã được 3.983, h
 
 Bước tiếp theo là đối chiếu video/annotation nguồn và kiểm tra đồng bộ thời gian trên các trường hợp lệch; chưa tự sửa annotation hay cắt toàn bộ. Sai lệch số frame chưa chứng minh mọi video bị hỏng hoặc mọi nhãn bị sai. Chưa thực hiện chia validation, cắt clip hay trích keypoint.
 
+## Tạo danh sách để xem bằng mắt
+
+Sau khi đã có `external_data/ipn_audit/videos.csv`, chạy:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\build_ipn_frame_review.py
+```
+
+Script tạo `external_data/ipn_audit/FRAME_REVIEW.csv` và `FRAME_REVIEW.md`. Đây là danh sách kiểm tra cục bộ, không commit lên Git. Kết quả hiện tại được ưu tiên như sau:
+
+- `P0-GESTURE`: 7 video có annotation của cử chỉ (`B0A`–`G11`) vượt frame cuối giải mã. Kiểm tra trước.
+- `P0-D0X`: 82 video chỉ có đoạn nền vượt frame cuối. Có thể kiểm tra sau vì thí nghiệm 13 lớp bỏ `D0X`.
+- `P1`: 18 video có số frame giải mã khác metadata nhưng annotation chưa vượt frame cuối.
+- `P2`: 4 video chỉ lệch số frame header; dùng số frame giải mã để đối chiếu.
+- `OK`: 89 video làm mẫu đối chứng.
+
+Bảy video P0-GESTURE hiện cần kiểm tra trước là: `1CM42_31_R_#132` (B0B), `1CV12_21_R_#112` (B0A), `1CV12_23_R_#117` (G01), `1CV12_23_R_#118` (G06), `1CV12_23_R_#119` (G09), `4CM11_29_R_#57` (G08), `4CM11_29_R_#60` (G05).
+
+Đây là hai bước khác nhau: script tạo danh sách và tính chênh lệch tự động; người 1 vẫn phải mở video, xem vùng gần `t_start`/`t_end`, rồi điền `review_status` trong CSV (`confirmed`, `annotation_ok` hoặc `needs_investigation`). Có thể mở video bằng VLC; với 30 FPS, frame gần đúng tương ứng `giây = frame / 30`. Không sửa `Annot_List.txt` trong lúc kiểm tra.
+
 Script được rà soát độc lập; đã kiểm tra giải mã video thử 7 frame, phát hiện file không đọc được, phát hiện lệch header riêng lẻ và tránh dùng báo cáo thành công cũ khi đầu vào bị thiếu.
 
 ## Chạy lại kiểm tra
