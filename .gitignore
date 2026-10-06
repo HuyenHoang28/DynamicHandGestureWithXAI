@@ -8,6 +8,7 @@ __pycache__/
 .venv*/
 venv/
 env/
+node_modules/
 
 final/outputs/
 final/results/
@@ -20,3 +21,42 @@ keypoint_extractor/mmpose/
 *.log
 .DS_Store
 Thumbs.db
+benchmark_data/
+external_data/
+docs/reports/
+scripts/organize_local_artifacts.ps1
+
+# Local presentation, report, and evaluation artifacts
+docs/KICH_BAN_THUYET_TRINH_VI.md
+docs/HANDBOOK_KIEN_TRUC_VA_CODE_VI.md
+docs/HANDBOOK_KIEN_TRUC_VA_CODE_VI.docx
+docs/IPN_HAND_EVALUATION_GUIDE_VI.md
+docs/README.md
+docs/KEYPOINT_EXTRACTOR_BENCHMARK_REPORT.md
+docs/keypoint_benchmark_tradeoff.png
+docs/deliverables/
+docs/benchmark_evidence/
+docs/demo_evidence/
+docs/keypoint_benchmark_evidence/
+docs/model_evaluation_evidence/
+
+# Local benchmark, test, demo, and report tooling
+final/code/benchmark_keypoint_models.py
+final/code/evaluate_keypoint_benchmark_downstream.py
+final/code/keypoint_benchmark_models.json
+final/code/merge_keypoint_benchmark_results.py
+/package.json
+/package-lock.json
+scripts/generate_handbook_docx.js
+scripts/generate_project_report.js
+scripts/run_keypoint_benchmark.ps1
+scripts/run_test_video.ps1
+scripts/prepare_ipn_smoke.py
+scripts/run_ipn_smoke.py
+scripts/report_ipn_smoke.py
+scripts/export_ipn_report.js
+scripts/vendor/
+
+# Temporary Microsoft Office lock files
+~$*.docx
+~$*.pptx
