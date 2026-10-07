@@ -32,6 +32,7 @@ def main():
         tail = int(row['annotations_past_decoded_end'])
         tail_rows = [a for a in annotations.get(row['video'], []) if int(a['t_end']) > decoded]
         tail_labels = sorted({a['label'] for a in tail_rows})
+        tail_ranges = ';'.join(f"{a['label']}:{a['t_start']}-{a['t_end']}" for a in tail_rows)
         gesture_tail = any(label != 'D0X' for label in tail_labels)
         if tail and gesture_tail:
             priority = 'P0-GESTURE: gesture annotation extends beyond decoded video'
@@ -43,7 +44,7 @@ def main():
             priority = 'P2: header-only mismatch'
         else:
             priority = 'OK: no count mismatch'
-        row.update(priority=priority, tail_labels=';'.join(tail_labels),
+        row.update(priority=priority, tail_labels=';'.join(tail_labels), tail_ranges=tail_ranges,
                    decoded_minus_expected=decoded - expected,
                    header_minus_decoded=header - decoded,
                    review_status='pending')
