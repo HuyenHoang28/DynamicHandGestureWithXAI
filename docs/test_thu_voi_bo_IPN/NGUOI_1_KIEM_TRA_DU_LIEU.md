@@ -92,3 +92,33 @@ Kiểm tra tự động không thay thế xem clip bằng mắt. Riêng người
 ```
 
 Chỉ dùng refresh khi dữ liệu nguồn và annotation chưa thay đổi. Nếu đã thay dữ liệu, chạy lại kiểm tra đầy đủ. Khi chạy lại đầy đủ, báo cáo cũ được đánh dấu chưa hoàn tất và CSV lưu dần các video đã xử lý.
+
+## Kiểm tra trực tiếp frame annotation
+
+Để phân biệt lệch đếm tuần tự với frame thực sự không đọc được, chạy:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_ipn_annotation_frames.py
+```
+
+Script seek trực tiếp tới `t_end - 1` theo chỉ số 0-based của OpenCV và ghi `ANNOTATION_SEEK_REVIEW.csv`. Kết quả hiện tại: **197/200 video đọc được frame annotation cuối**; 3 video thất bại đều là đoạn `D0X` cuối (`1CM42_6_R_#161`, `1CM42_7_L_#201`, `4CM11_19_R_#19`). Cả 7 video `P0-GESTURE` đều đọc được frame `t_end` trực tiếp. Vì vậy không được kết luận 7 cử chỉ đó mất frame chỉ dựa trên số đếm tuần tự; vẫn cần xem hình để xác nhận nội dung động tác.
+Để tạo bảng review gọn chỉ cho 7 đoạn cử chỉ này, chạy:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\create_ipn_gesture_review.py
+```
+
+File cần mở là `external_data/ipn_audit/GESTURE_REVIEW.csv`. Chỉ điền hai cột `visual_review` và `notes`; cột `direct_seek` đã được kiểm tra tự động. Các cột còn lại là thông tin đối chiếu, không cần sửa.
+
+## Chốt subject split và tạo manifest
+
+Sau khi review 7 đoạn cử chỉ, tạo manifest 13 lớp bằng:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\create_ipn_manifest.py
+```
+
+Quy tắc hiện tại dùng seed `42`, chọn 7/37 subject train làm validation:
+`1CM42_18`, `1CM42_32`, `1CM42_7`, `1CV12_6`, `1CV12_8`, `4CM11_14`, `4CM11_15`.
+
+Kết quả là 120 video train, 28 video validation, 52 video test; tương ứng 2.528, 589 và 1.101 clip 13 lớp. File `external_data/ipn_processed/split_subjects.json` ghi lại seed và danh sách subject. Nếu nhóm thống nhất seed hoặc danh sách khác, chạy lại script trước khi cắt clip.

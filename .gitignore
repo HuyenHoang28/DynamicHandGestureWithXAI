@@ -24,7 +24,6 @@ Thumbs.db
 benchmark_data/
 external_data/
 docs/reports/
-scripts/organize_local_artifacts.ps1
 
 # Local presentation, report, and evaluation artifacts
 docs/KICH_BAN_THUYET_TRINH_VI.md
@@ -49,11 +48,6 @@ final/code/merge_keypoint_benchmark_results.py
 /package-lock.json
 scripts/generate_handbook_docx.js
 scripts/generate_project_report.js
-scripts/run_keypoint_benchmark.ps1
-scripts/run_test_video.ps1
-scripts/prepare_ipn_smoke.py
-scripts/run_ipn_smoke.py
-scripts/report_ipn_smoke.py
 scripts/export_ipn_report.js
 scripts/vendor/
 
