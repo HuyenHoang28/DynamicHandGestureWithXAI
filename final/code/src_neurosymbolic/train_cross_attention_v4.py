@@ -69,6 +69,21 @@ def accuracy(logits: torch.Tensor, labels: torch.Tensor) -> int:
     return int((logits.argmax(dim=1) == labels).sum().item())
 
 
+def macro_f1(predictions: list[int], labels: list[int], num_classes: int) -> float:
+    # Mean F1 over classes with support > 0, same formula as the neural-only baseline report.
+    scores = []
+    for class_id in range(num_classes):
+        support = sum(1 for label in labels if label == class_id)
+        if support == 0:
+            continue
+        tp = sum(1 for pred, label in zip(predictions, labels) if pred == class_id and label == class_id)
+        predicted = sum(1 for pred in predictions if pred == class_id)
+        precision = tp / predicted if predicted else 0.0
+        recall = tp / support
+        scores.append(2 * precision * recall / (precision + recall) if precision + recall else 0.0)
+    return sum(scores) / max(len(scores), 1)
+
+
 def branch_logits(outputs: dict, branch: str) -> torch.Tensor:
     if branch == "final":
         return outputs["logits"]
@@ -261,8 +276,11 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     branch: str = "final",
+    num_classes: int | None = None,
 ) -> dict[str, float | int]:
     model.eval()
+    predictions = {"final": [], "neural": [], "kg": []}
+    targets = []
     totals = {
         "loss": 0.0,
         "final_correct": 0,
@@ -282,13 +300,21 @@ def evaluate(
         totals["final_correct"] += accuracy(outputs["logits"], labels)
         totals["neural_correct"] += accuracy(outputs["neural_logits"], labels)
         totals["kg_correct"] += accuracy(outputs["kg_logits"], labels)
+        for name, key in (("final", "logits"), ("neural", "neural_logits"), ("kg", "kg_logits")):
+            predictions[name].extend(outputs[key].argmax(dim=1).tolist())
+        targets.extend(labels.tolist())
         totals["gate_sum"] += float(outputs["gate"].sum())
         totals["gate_count"] += outputs["gate"].numel()
         totals["count"] += batch_size
     count = max(int(totals["count"]), 1)
+    classes = num_classes or (max(targets, default=0) + 1)
     return {
         "loss": totals["loss"] / count,
         "accuracy": totals[f"{branch}_correct"] / count,
+        "macro_f1": macro_f1(predictions[branch], targets, classes),
+        "final_macro_f1": macro_f1(predictions["final"], targets, classes),
+        "neural_macro_f1": macro_f1(predictions["neural"], targets, classes),
+        "kg_macro_f1": macro_f1(predictions["kg"], targets, classes),
         "logit_branch": branch,
         "final_accuracy": totals["final_correct"] / count,
         "neural_accuracy": totals["neural_correct"] / count,
@@ -505,19 +531,20 @@ def train(args: argparse.Namespace) -> None:
             "loss": loss_sum / max(total, 1),
             "accuracy": correct / max(total, 1),
         }
-        val_metrics = evaluate(model, val_loader, device, args.logit_branch)
+        val_metrics = evaluate(model, val_loader, device, args.logit_branch, args.num_classes)
         test_metrics = None
         test_improved = False
         if test_loader is not None:
-            test_metrics = evaluate(model, test_loader, device, args.logit_branch)
+            test_metrics = evaluate(model, test_loader, device, args.logit_branch, args.num_classes)
             test_improved = float(test_metrics["accuracy"]) > best_test_accuracy + args.early_stop_min_delta
             if test_improved:
                 best_test_accuracy = float(test_metrics["accuracy"])
-        scheduler.step(float(val_metrics["accuracy"]))
+        val_score = float(val_metrics[args.select_metric])
+        scheduler.step(val_score)
         learning_rates = [group["lr"] for group in optimizer.param_groups]
-        improved = float(val_metrics["accuracy"]) > best_accuracy + args.early_stop_min_delta
+        improved = val_score > best_accuracy + args.early_stop_min_delta
         if improved:
-            best_accuracy = float(val_metrics["accuracy"])
+            best_accuracy = val_score
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
@@ -535,7 +562,7 @@ def train(args: argparse.Namespace) -> None:
         message = (
             f"epoch={epoch} train_loss={train_metrics['loss']:.4f} "
             f"train_acc={train_metrics['accuracy']:.4f} val_loss={val_metrics['loss']:.4f} "
-            f"val_acc={val_metrics['accuracy']:.4f} branch={args.logit_branch} "
+            f"val_acc={val_metrics['accuracy']:.4f} val_macro_f1={val_metrics['macro_f1']:.4f} branch={args.logit_branch} "
             f"final_acc={val_metrics['final_accuracy']:.4f} neural_acc={val_metrics['neural_accuracy']:.4f} "
             f"kg_acc={val_metrics['kg_accuracy']:.4f} gate={val_metrics['gate_mean']:.4f} "
             f"lr={','.join(f'{value:.2e}' for value in learning_rates)} "
@@ -564,6 +591,7 @@ def train(args: argparse.Namespace) -> None:
             "val": val_metrics,
             "test": test_metrics,
             "best_accuracy": best_accuracy,
+            "select_metric": args.select_metric,
             "best_test_accuracy": best_test_accuracy,
             "epochs_without_improvement": epochs_without_improvement,
         }
@@ -574,7 +602,7 @@ def train(args: argparse.Namespace) -> None:
             torch.save(checkpoint, args.output_dir / "best_test.pt")
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
         if epochs_without_improvement >= args.early_stop_patience:
-            print(f"Early stopping at epoch {epoch}; best_val_acc={best_accuracy:.4f}")
+            print(f"Early stopping at epoch {epoch}; best_val_{args.select_metric}={best_accuracy:.4f}")
             break
     print(f"Saved V4 checkpoints to {args.output_dir}")
 
@@ -632,6 +660,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-best-test", action="store_true")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--select-metric", choices=["accuracy", "macro_f1"], default="accuracy")
     return parser.parse_args()
 
 
