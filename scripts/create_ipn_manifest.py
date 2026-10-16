@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = ['B0A', 'B0B'] + [f'G{i:02}' for i in range(1, 12)]
 LABEL_IDS = {label: i for i, label in enumerate(LABELS)}
+DEFAULT_EXCLUDED_SUBJECTS = ("1CM42_3",)
 
 
 def subject_of(video):
@@ -24,25 +25,47 @@ def read_video_list(path):
         return {line.split()[0]: int(line.split()[1]) for line in f if line.strip()}
 
 
+def manifest_path(path: Path) -> str:
+    """Use repo-relative paths when possible, otherwise a normalized absolute path."""
+
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(ROOT.resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'external_data/ipn_processed')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--val-subjects', type=int, default=7)
-    parser.add_argument(
+    exclusion = parser.add_mutually_exclusive_group()
+    exclusion.add_argument(
         '--exclude-subject',
         action='append',
-        default=[],
+        default=None,
         metavar='SUBJECT',
-        help='Subject ID to omit from all generated manifests (repeatable).',
+        help='Subject ID to omit (repeatable); defaults to 1CM42_3 for the locked protocol.',
+    )
+    exclusion.add_argument(
+        '--include-all-subjects',
+        action='store_true',
+        help='Disable the locked-protocol default exclusion.',
     )
     args = parser.parse_args()
     # Sort and deduplicate so the recorded metadata is stable even when the
     # same subject is supplied more than once or in a different order.
-    excluded_subjects = {subject.strip() for subject in args.exclude_subject if subject.strip()}
+    requested_exclusions = (
+        [] if args.include_all_subjects
+        else (args.exclude_subject if args.exclude_subject is not None else DEFAULT_EXCLUDED_SUBJECTS)
+    )
+    excluded_subjects = {subject.strip() for subject in requested_exclusions if subject.strip()}
     ann_dir = ROOT / 'external_data/ipn_full/annotations'
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    clip_root = out / 'clips'
+    keypoint_root = out / 'keypoints'
     train_videos = read_video_list(ann_dir / 'Video_TrainList.txt')
     test_videos = read_video_list(ann_dir / 'Video_TestList.txt')
     train_subjects_all = {subject_of(video) for video in train_videos}
@@ -89,8 +112,8 @@ def main():
         rows.append(dict(clip_id=clip_id, source_video=video, subject=subject, split=split,
                          label=label, label_id=LABEL_IDS[label], t_start=start, t_end=end,
                          frames=int(ann['frames']),
-                         clip_path=f'external_data/ipn_processed/clips/{split}/{label}/{subject}/{clip_id}.avi',
-                         keypoint_path=f'external_data/ipn_processed/keypoints/{split}/{label}/{subject}/{clip_id}.json'))
+                         clip_path=manifest_path(clip_root / split / label / subject / f'{clip_id}.avi'),
+                         keypoint_path=manifest_path(keypoint_root / split / label / subject / f'{clip_id}.json')))
     rows.sort(key=lambda r: (['train', 'val', 'test'].index(r['split']), r['label'], r['source_video'], r['t_start']))
     with (out / 'manifest.csv').open('w', encoding='utf-8-sig', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fields)

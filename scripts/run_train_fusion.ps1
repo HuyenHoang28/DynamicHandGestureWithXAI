@@ -22,3 +22,7 @@ Set-Location $ProjectRoot
   --batch-size $BatchSize `
   --epochs $Epochs `
   --device $Device
+
+if ($LASTEXITCODE -ne 0) {
+  throw "Fusion training failed with exit code $LASTEXITCODE"
+}

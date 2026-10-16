@@ -20,10 +20,14 @@ FINGER_MOTION_NAMES = {
     "index_finger_moves_diagonal_down_left",
     "index_finger_moves_diagonal_down_right",
     "index_finger_oscillates",
+    "middle_finger_moves_up",
+    "middle_finger_moves_down",
     "thumb_moves_up",
     "thumb_moves_down",
     "fingers_spread_increasing",
     "fingers_spread_decreasing",
+    "pinch_distance_increasing",
+    "pinch_distance_decreasing",
 }
 COORDINATION_NAMES = {
     "hands_move_same_direction_horizontal",
@@ -81,6 +85,10 @@ CONFLICT_GROUPS = [
         "hand_moves_diagonal_down_left",
         "hand_moves_diagonal_down_right",
     },
+    {"index_finger_moves_up", "index_finger_moves_down"},
+    {"middle_finger_moves_up", "middle_finger_moves_down"},
+    {"fingers_spread_increasing", "fingers_spread_decreasing"},
+    {"pinch_distance_increasing", "pinch_distance_decreasing"},
 ]
 
 

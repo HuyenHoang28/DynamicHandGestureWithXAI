@@ -8,6 +8,11 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $ProjectRoot
+$OutputPath = if ([IO.Path]::GetExtension($Output)) {
+  $Output
+} else {
+  Join-Path $Output "test_metrics.json"
+}
 
 & $Python final\code\src_neurosymbolic\test_cross_attention_v2.py `
   --checkpoint $Checkpoint `
@@ -20,4 +25,8 @@ Set-Location $ProjectRoot
   --num-workers 0 `
   --eval-branch final `
   --device $Device `
-  --output $Output
+  --output $OutputPath
+
+if ($LASTEXITCODE -ne 0) {
+  throw "Fusion evaluation failed with exit code $LASTEXITCODE"
+}

@@ -16,6 +16,10 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--checkpoint", type=Path, default=ROOT / "final/data/Output/checkpoints/cross_attention_v4_template170_retrain_next/best_test.pt")
+    parser.add_argument("--template-dir", type=Path, default=ROOT / "final/data/Input/template_graphs")
+    parser.add_argument("--mmpose-root", type=Path, default=ROOT / ".venv/Lib/site-packages/mmpose/.mim")
+    parser.add_argument("--pose-weights", type=Path, default=ROOT / "final/data/Output/checkpoints/rtmw/rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth")
     args = parser.parse_args()
     os.environ["WIN_PD_OVERRIDE_LOCAL_APPDATA"] = str(ROOT / ".gitignore")
     os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
@@ -35,14 +39,14 @@ def main():
             source = ROOT / source
         params = argparse.Namespace(
             input_video=source, input_keypoints=None, input_cache=None,
-            checkpoint=ROOT / "final/data/Output/checkpoints/cross_attention_v4_template170_retrain_next/best_test.pt",
-            template_dir=ROOT / "final/data/Input/template_graphs", output_dir=dest,
+            checkpoint=args.checkpoint.resolve(),
+            template_dir=args.template_dir.resolve(), output_dir=dest,
             device=args.device, top_k=5, disable_symbolic_match=False,
             min_score=0.3, window_size=5, motion_threshold=0.08,
             max_gap=2, min_event_confidence=0.3, composite_gap=4,
             repo_root=ROOT, extract_script=ROOT / "keypoint_extractor/run_rtmw_splits_dual.py",
-            mmpose_root=ROOT / ".venv/Lib/site-packages/mmpose/.mim",
-            pose_weights=ROOT / "final/data/Output/checkpoints/rtmw/rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth",
+            mmpose_root=args.mmpose_root.resolve(),
+            pose_weights=args.pose_weights.resolve(),
         )
         began = time.perf_counter()
         row = dict(item)

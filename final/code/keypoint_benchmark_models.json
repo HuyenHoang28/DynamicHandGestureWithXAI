@@ -1,0 +1,16 @@
+[
+  {
+    "name": "rtmw_m_256x192",
+    "config": ".venv/Lib/site-packages/mmpose/.mim/configs/wholebody_2d_keypoint/rtmpose/cocktail14/rtmw-m_8xb1024-270e_cocktail14-256x192.py",
+    "checkpoint": "final/data/Output/checkpoints/rtmw/rtmw-dw-l-m_simcc-cocktail14_270e-256x192-20231122.pth",
+    "official_hand_ap": 0.491,
+    "official_wholebody_ap": 0.582
+  },
+  {
+    "name": "rtmw_l_384x288",
+    "config": ".venv/Lib/site-packages/mmpose/.mim/configs/wholebody_2d_keypoint/rtmpose/cocktail14/rtmw-l_8xb320-270e_cocktail14-384x288.py",
+    "checkpoint": "final/data/Output/checkpoints/rtmw/rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth",
+    "official_hand_ap": 0.663,
+    "official_wholebody_ap": 0.701
+  }
+]

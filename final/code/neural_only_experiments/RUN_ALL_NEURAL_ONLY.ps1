@@ -19,6 +19,9 @@ foreach ($backbone in $backbones) {
     --batch-size $BatchSize `
     --epochs $Epochs `
     --device $Device
+  if ($LASTEXITCODE -ne 0) {
+    throw "Training failed for $backbone with exit code $LASTEXITCODE"
+  }
 
   & $Python neural_only_experiments\test_neural_only.py `
     --checkpoint "$out\best.pt" `
@@ -27,4 +30,7 @@ foreach ($backbone in $backbones) {
     --batch-size $BatchSize `
     --device $Device `
     --output "$out\test_metrics.json"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Evaluation failed for $backbone with exit code $LASTEXITCODE"
+  }
 }

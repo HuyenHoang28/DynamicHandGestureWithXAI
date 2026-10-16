@@ -11,3 +11,7 @@ Set-Location $ProjectRoot
 & $Python final\code\src_neurosymbolic\demo_ui\app.py `
   --server-name $ServerName `
   --server-port $ServerPort
+
+if ($LASTEXITCODE -ne 0) {
+  throw "Demo UI failed with exit code $LASTEXITCODE"
+}

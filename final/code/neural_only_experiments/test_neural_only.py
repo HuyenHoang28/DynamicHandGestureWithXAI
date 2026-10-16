@@ -13,7 +13,7 @@ from models import NeuralOnlyClassifier
 
 
 @torch.no_grad()
-def test(args: argparse.Namespace) -> None:
+def run_evaluation(args: argparse.Namespace) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     model_args = argparse.Namespace(**checkpoint["args"])
@@ -128,4 +128,4 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    test(parse_args())
+    run_evaluation(parse_args())

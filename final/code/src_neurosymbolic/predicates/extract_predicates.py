@@ -2,10 +2,25 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 
 
 SIDES = ["left", "right"]
 FINGER_TIPS = ["thumb4", "forefinger4", "middle_finger4", "ring_finger4", "pinky_finger4"]
+
+# ``motion_threshold`` remains the legacy public knob.  The IPN phase-v2
+# precompute entry point uses the more conservative hand threshold and the
+# finer-grained finger/pinch thresholds below, while direct callers that only
+# pass the legacy argument retain the old behaviour.
+DEFAULT_MOTION_THRESHOLD = 0.08
+IPN_HAND_MOTION_THRESHOLD = 0.12
+IPN_FINGER_MOTION_THRESHOLD = 0.04
+IPN_PINCH_THRESHOLD = 0.08
+# Descriptive aliases keep the configuration easy to discover for callers
+# that do not need to distinguish the IPN preset name.
+DEFAULT_HAND_MOTION_THRESHOLD = IPN_HAND_MOTION_THRESHOLD
+DEFAULT_FINGER_MOTION_THRESHOLD = IPN_FINGER_MOTION_THRESHOLD
+DEFAULT_PINCH_THRESHOLD = IPN_PINCH_THRESHOLD
 FINGERS = {
     "thumb": ["thumb1", "thumb2", "thumb3", "thumb4"],
     "forefinger": ["forefinger1", "forefinger2", "forefinger3", "forefinger4"],
@@ -73,12 +88,14 @@ def angle_degrees(a: Point, b: Point, c: Point) -> float | None:
 
 
 def hand_center(frame: dict, side: str, min_score: float) -> Point | None:
-    return avg_point(
-        [
-            point(frame, f"{side}_hand_root", min_score),
-            point(frame, f"{side}_wrist", min_score),
-        ]
-    )
+    root = point(frame, f"{side}_hand_root", min_score)
+    wrist = point(frame, f"{side}_wrist", min_score)
+    # A window must use the same anchor definition at every frame. Falling
+    # back from the root/wrist midpoint to either landmark alone can turn the
+    # anatomical offset between them into artificial hand motion.
+    if root is None or wrist is None:
+        return None
+    return avg_point([root, wrist])
 
 
 def face_center(frame: dict, min_score: float) -> Point | None:
@@ -288,12 +305,77 @@ def delta(values: list[Point | None], start: int, end: int, axis: str) -> float 
     return (b.y - a.y) if axis == "y" else (b.x - a.x)
 
 
+def window_visible(values: list[object | None], start: int, end: int) -> bool:
+    """Require every sample in a trend window to pass visibility checks."""
+
+    return not any(value is None for value in values[start : end + 1])
+
+
 def rel_tip(frame: dict, side: str, tip_name: str, min_score: float) -> Point | None:
     tip = point(frame, f"{side}_{tip_name}", min_score)
     root = point(frame, f"{side}_hand_root", min_score)
     if tip is None or root is None:
         return None
     return Point(tip.x - root.x, tip.y - root.y, min(tip.score, root.score))
+
+
+def local_hand_scale(frame: dict, side: str, min_score: float) -> tuple[float, float, list[str]] | None:
+    """Return a robust palm/hand scale and its visibility evidence.
+
+    The shoulder-width normalization used by the pose pipeline is useful for
+    body-relative predicates, but it is not a sufficiently local reference
+    for a thumb/index pinch.  Use only relatively rigid palm landmarks here;
+    fingertip landmarks are deliberately excluded so finger motion cannot
+    change the denominator.  A median over the visible anchor-pair lengths
+    makes the estimate tolerant of one noisy or missing palm keypoint.
+    """
+
+    pair_names = [
+        ("hand_root", "wrist"),
+        ("forefinger1", "pinky_finger1"),
+        ("wrist", "middle_finger1"),
+        ("hand_root", "middle_finger1"),
+    ]
+    distances: list[float] = []
+    anchor_points: list[Point] = []
+    evidence: list[str] = []
+    for first_name, second_name in pair_names:
+        first = point(frame, f"{side}_{first_name}", min_score)
+        second = point(frame, f"{side}_{second_name}", min_score)
+        if first is None or second is None:
+            continue
+        pair_distance = dist(first, second)
+        if pair_distance <= 1e-6:
+            continue
+        distances.append(pair_distance)
+        anchor_points.extend([first, second])
+        evidence.extend([f"{side}_{first_name}", f"{side}_{second_name}"])
+
+    if not distances:
+        return None
+    scale = float(median(distances))
+    if scale <= 1e-6:
+        return None
+    return scale, confidence(*anchor_points), sorted(set(evidence))
+
+
+def normalized_pinch_distance(frame: dict, side: str, min_score: float) -> tuple[float, float, list[str]] | None:
+    """Return thumb/index distance normalized by the local palm scale."""
+
+    thumb = point(frame, f"{side}_thumb4", min_score)
+    index = point(frame, f"{side}_forefinger4", min_score)
+    scale_data = local_hand_scale(frame, side, min_score)
+    if thumb is None or index is None or scale_data is None:
+        return None
+    scale, scale_confidence, scale_evidence = scale_data
+    normalized_distance = dist(thumb, index) / scale
+    # Include endpoint visibility and palm-scale visibility in the trend
+    # confidence.  A missing/low-score anchor never reaches this point.
+    trend_confidence = (confidence(thumb, index) + scale_confidence) / 2.0
+    evidence = sorted(
+        set(scale_evidence + [f"{side}_thumb4", f"{side}_forefinger4"])
+    )
+    return normalized_distance, trend_confidence, evidence
 
 
 def direction_changes(series: list[float], min_abs_delta: float) -> int:
@@ -324,7 +406,10 @@ def extract_motion(
     min_score: float,
     window_size: int,
     motion_threshold: float,
+    hand_motion_threshold: float | None = None,
 ) -> tuple[list[dict], dict[tuple[str, int], bool], dict[tuple[str, int], bool]]:
+    if hand_motion_threshold is not None:
+        motion_threshold = hand_motion_threshold
     predicates = []
     hand_moving = {}
     hand_fast = {}
@@ -335,6 +420,8 @@ def extract_motion(
         centers = [hand_center(frame, side, min_score) if frame.get("valid", False) else None for frame in frames]
         for start in range(0, len(frames) - window_size):
             end = start + window_size
+            if not window_visible(centers, start, end):
+                continue
             start_frame = int(frames[start].get("frame_id", start))
             end_frame = int(frames[end].get("frame_id", end))
             dx = delta(centers, start, end, "x")
@@ -451,36 +538,57 @@ def extract_finger_motion(
     motion_threshold: float,
     hand_moving: dict[tuple[str, int], bool],
     hand_fast: dict[tuple[str, int], bool],
+    finger_motion_threshold: float | None = None,
+    pinch_threshold: float | None = None,
 ) -> list[dict]:
+    """Extract motion in hand-relative coordinates.
+
+    ``hand_moving`` and ``hand_fast`` remain accepted for compatibility with
+    earlier callers.  They are intentionally not used as suppression masks:
+    the tip-minus-root coordinates below separate finger motion from a moving
+    hand, and visibility/confidence checks on each endpoint decide whether a
+    predicate is emitted.
+    """
+
+    if finger_motion_threshold is None:
+        finger_motion_threshold = motion_threshold
+    if pinch_threshold is None:
+        pinch_threshold = finger_motion_threshold
+    # Keep the legacy parameters in the signature without allowing global
+    # motion flags to hide otherwise observable relative finger motion.
+    _ = hand_moving, hand_fast
     predicates = []
     if len(frames) <= window_size:
         return predicates
 
     for side in SIDES:
         index_rel = [rel_tip(frame, side, "forefinger4", min_score) if frame.get("valid", False) else None for frame in frames]
+        middle_rel = [rel_tip(frame, side, "middle_finger4", min_score) if frame.get("valid", False) else None for frame in frames]
         thumb_rel = [rel_tip(frame, side, "thumb4", min_score) if frame.get("valid", False) else None for frame in frames]
+        pinch_distances = [
+            normalized_pinch_distance(frame, side, min_score) if frame.get("valid", False) else None
+            for frame in frames
+        ]
         subject = f"{side}_hand"
         for start in range(0, len(frames) - window_size):
             end = start + window_size
-            if any(hand_moving.get((side, idx), False) for idx in range(start, end + 1)):
-                continue
             start_frame = int(frames[start].get("frame_id", start))
             end_frame = int(frames[end].get("frame_id", end))
 
             idx_dx = delta(index_rel, start, end, "x")
             idx_dy = delta(index_rel, start, end, "y")
-            if idx_dx is not None and idx_dy is not None:
+            if idx_dx is not None and idx_dy is not None and window_visible(index_rel, start, end):
                 conf = confidence(index_rel[start], index_rel[end])
-                ev = [f"{side}_forefinger4"]
-                if idx_dy < -motion_threshold:
+                ev = [f"{side}_hand_root", f"{side}_forefinger4"]
+                if idx_dy < -finger_motion_threshold:
                     add_window_predicate(predicates, "index_finger_moves_up", subject, start_frame, end_frame, conf, ev)
-                if idx_dy > motion_threshold:
+                if idx_dy > finger_motion_threshold:
                     add_window_predicate(predicates, "index_finger_moves_down", subject, start_frame, end_frame, conf, ev)
-                if idx_dx < -motion_threshold:
+                if idx_dx < -finger_motion_threshold:
                     add_window_predicate(predicates, "index_finger_moves_left", subject, start_frame, end_frame, conf, ev)
-                if idx_dx > motion_threshold:
+                if idx_dx > finger_motion_threshold:
                     add_window_predicate(predicates, "index_finger_moves_right", subject, start_frame, end_frame, conf, ev)
-                if abs(idx_dx) > motion_threshold and abs(idx_dy) > motion_threshold:
+                if abs(idx_dx) > finger_motion_threshold and abs(idx_dy) > finger_motion_threshold:
                     vertical = "up" if idx_dy < 0 else "down"
                     horizontal = "left" if idx_dx < 0 else "right"
                     add_window_predicate(predicates, f"index_finger_moves_diagonal_{vertical}_{horizontal}", subject, start_frame, end_frame, conf, ev)
@@ -490,37 +598,63 @@ def extract_finger_motion(
                     dxs = [local[i + 1].x - local[i].x for i in range(len(local) - 1)]
                     dys = [local[i + 1].y - local[i].y for i in range(len(local) - 1)]
                     if (
-                        direction_changes(dxs, motion_threshold / 2.0) >= 2
-                        or direction_changes(dys, motion_threshold / 2.0) >= 2
+                        direction_changes(dxs, finger_motion_threshold / 2.0) >= 2
+                        or direction_changes(dys, finger_motion_threshold / 2.0) >= 2
                     ):
-                        add_window_predicate(predicates, "index_finger_oscillates", subject, start_frame, end_frame, conf, [f"{side}_forefinger4"])
+                        add_window_predicate(predicates, "index_finger_oscillates", subject, start_frame, end_frame, conf, ev)
+
+            middle_dy = delta(middle_rel, start, end, "y")
+            if middle_dy is not None and window_visible(middle_rel, start, end):
+                conf = confidence(middle_rel[start], middle_rel[end])
+                ev = [f"{side}_hand_root", f"{side}_middle_finger4"]
+                if middle_dy < -finger_motion_threshold:
+                    add_window_predicate(predicates, "middle_finger_moves_up", subject, start_frame, end_frame, conf, ev)
+                if middle_dy > finger_motion_threshold:
+                    add_window_predicate(predicates, "middle_finger_moves_down", subject, start_frame, end_frame, conf, ev)
 
             th_dy = delta(thumb_rel, start, end, "y")
-            if th_dy is not None:
+            if th_dy is not None and window_visible(thumb_rel, start, end):
                 conf = confidence(thumb_rel[start], thumb_rel[end])
-                ev = [f"{side}_thumb4"]
-                if th_dy < -motion_threshold:
+                ev = [f"{side}_hand_root", f"{side}_thumb4"]
+                if th_dy < -finger_motion_threshold:
                     add_window_predicate(predicates, "thumb_moves_up", subject, start_frame, end_frame, conf, ev)
-                if th_dy > motion_threshold:
+                if th_dy > finger_motion_threshold:
                     add_window_predicate(predicates, "thumb_moves_down", subject, start_frame, end_frame, conf, ev)
+
+            start_pinch = pinch_distances[start]
+            end_pinch = pinch_distances[end]
+            if (
+                start_pinch is not None
+                and end_pinch is not None
+                and window_visible(pinch_distances, start, end)
+            ):
+                pinch_delta = end_pinch[0] - start_pinch[0]
+                conf = (start_pinch[1] + end_pinch[1]) / 2.0
+                ev = sorted(set(start_pinch[2] + end_pinch[2]))
+                if pinch_delta > pinch_threshold:
+                    add_window_predicate(predicates, "pinch_distance_increasing", subject, start_frame, end_frame, conf, ev)
+                if pinch_delta < -pinch_threshold:
+                    add_window_predicate(predicates, "pinch_distance_decreasing", subject, start_frame, end_frame, conf, ev)
 
         spreads = [fingertip_spread(frame, side, min_score) if frame.get("valid", False) else None for frame in frames]
         for start in range(0, len(frames) - window_size):
             end = start + window_size
-            if any(hand_fast.get((side, idx), False) for idx in range(start, end + 1)):
-                continue
             start_spread = spreads[start]
             end_spread = spreads[end]
-            if start_spread is None or end_spread is None:
+            if (
+                start_spread is None
+                or end_spread is None
+                or not window_visible(spreads, start, end)
+            ):
                 continue
             delta_spread = end_spread[0] - start_spread[0]
             conf = (start_spread[1] + end_spread[1]) / 2.0
             start_frame = int(frames[start].get("frame_id", start))
             end_frame = int(frames[end].get("frame_id", end))
             ev = [f"{side}_{tip}" for tip in FINGER_TIPS]
-            if delta_spread > motion_threshold:
+            if delta_spread > finger_motion_threshold:
                 add_window_predicate(predicates, "fingers_spread_increasing", subject, start_frame, end_frame, conf, ev)
-            if delta_spread < -motion_threshold:
+            if delta_spread < -finger_motion_threshold:
                 add_window_predicate(predicates, "fingers_spread_decreasing", subject, start_frame, end_frame, conf, ev)
 
     return predicates
@@ -534,7 +668,15 @@ def signed_direction(value: float, threshold: float) -> int:
     return 0
 
 
-def extract_coordination(frames: list[dict], min_score: float, window_size: int, motion_threshold: float) -> list[dict]:
+def extract_coordination(
+    frames: list[dict],
+    min_score: float,
+    window_size: int,
+    motion_threshold: float,
+    hand_motion_threshold: float | None = None,
+) -> list[dict]:
+    if hand_motion_threshold is not None:
+        motion_threshold = hand_motion_threshold
     predicates = []
     if len(frames) <= window_size:
         return predicates
@@ -544,6 +686,8 @@ def extract_coordination(frames: list[dict], min_score: float, window_size: int,
 
     for start in range(0, len(frames) - window_size):
         end = start + window_size
+        if not window_visible(left_centers, start, end) or not window_visible(right_centers, start, end):
+            continue
         left_dx = delta(left_centers, start, end, "x")
         right_dx = delta(right_centers, start, end, "x")
         left_dy = delta(left_centers, start, end, "y")
@@ -654,18 +798,92 @@ def merge_adjacent(predicates: list[dict]) -> list[dict]:
     return sorted(merged, key=lambda p: (p["start_frame"], p["end_frame"], p["name"], p["subject"]))
 
 
-def extract_predicates(data: dict, min_score: float = 0.3, window_size: int = 5, motion_threshold: float = 0.08) -> dict:
+def build_predicate_config(
+    min_score: float = 0.3,
+    window_size: int = 5,
+    motion_threshold: float = DEFAULT_MOTION_THRESHOLD,
+    hand_motion_threshold: float | None = None,
+    finger_motion_threshold: float | None = None,
+    pinch_threshold: float | None = None,
+) -> dict:
+    resolved_hand_threshold = motion_threshold if hand_motion_threshold is None else hand_motion_threshold
+    resolved_finger_threshold = motion_threshold if finger_motion_threshold is None else finger_motion_threshold
+    resolved_pinch_threshold = resolved_finger_threshold if pinch_threshold is None else pinch_threshold
+    return {
+        "version": "ipn_predicate_v2",
+        "min_score": float(min_score),
+        "window_size": int(window_size),
+        "thresholds": {
+            "legacy_motion_threshold": float(motion_threshold),
+            "hand_motion_threshold": float(resolved_hand_threshold),
+            "finger_motion_threshold": float(resolved_finger_threshold),
+            "pinch_threshold": float(resolved_pinch_threshold),
+        },
+        "finger_coordinates": "tip_minus_hand_root",
+        "pinch_distance": "thumb4_forefinger4_distance_divided_by_median_local_palm_scale",
+        "visibility": "keypoint_score_must_meet_min_score",
+    }
+
+
+def extract_predicates(
+    data: dict,
+    min_score: float = 0.3,
+    window_size: int = 5,
+    motion_threshold: float = DEFAULT_MOTION_THRESHOLD,
+    hand_motion_threshold: float | None = None,
+    finger_motion_threshold: float | None = None,
+    pinch_threshold: float | None = None,
+) -> dict:
+    """Extract predicates while retaining the legacy ``motion_threshold`` API.
+
+    When the new thresholds are omitted, all motion families use the legacy
+    value.  This keeps existing Python callers deterministic; IPN precompute
+    supplies its tuned values explicitly.
+    """
+
+    predicate_config = build_predicate_config(
+        min_score,
+        window_size,
+        motion_threshold,
+        hand_motion_threshold,
+        finger_motion_threshold,
+        pinch_threshold,
+    )
+    thresholds = predicate_config["thresholds"]
+    resolved_hand_threshold = thresholds["hand_motion_threshold"]
+    resolved_finger_threshold = thresholds["finger_motion_threshold"]
+    resolved_pinch_threshold = thresholds["pinch_threshold"]
     frames = data.get("frames") or []
     spatial = extract_spatial_and_shape(frames, min_score)
-    motion, hand_moving, hand_fast = extract_motion(frames, min_score, window_size, motion_threshold)
-    finger_motion = extract_finger_motion(frames, min_score, window_size, motion_threshold, hand_moving, hand_fast)
-    coordination = extract_coordination(frames, min_score, window_size, motion_threshold)
+    motion, hand_moving, hand_fast = extract_motion(
+        frames,
+        min_score,
+        window_size,
+        resolved_hand_threshold,
+    )
+    finger_motion = extract_finger_motion(
+        frames,
+        min_score,
+        window_size,
+        resolved_finger_threshold,
+        hand_moving,
+        hand_fast,
+        finger_motion_threshold=resolved_finger_threshold,
+        pinch_threshold=resolved_pinch_threshold,
+    )
+    coordination = extract_coordination(
+        frames,
+        min_score,
+        window_size,
+        resolved_hand_threshold,
+    )
     sweep = extract_sweep(frames, min_score)
     predicates = merge_adjacent(spatial + motion + finger_motion + coordination + sweep)
     return {
         "video_id": data.get("video_id", ""),
         "source_path": data.get("source_path", ""),
         "predicates": predicates,
+        "predicate_config": predicate_config,
     }
 
 
@@ -681,7 +899,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True, help="Output predicate JSON.")
     parser.add_argument("--min-score", type=float, default=0.3)
     parser.add_argument("--window-size", type=int, default=5)
-    parser.add_argument("--motion-threshold", type=float, default=0.08)
+    parser.add_argument("--motion-threshold", type=float, default=DEFAULT_MOTION_THRESHOLD, help="Legacy threshold fallback for all motion families.")
+    parser.add_argument("--hand-motion-threshold", type=float, default=None)
+    parser.add_argument("--finger-motion-threshold", type=float, default=None)
+    parser.add_argument("--pinch-threshold", "--pinch-motion-threshold", dest="pinch_threshold", type=float, default=None)
     parser.add_argument("--pretty", action="store_true")
     return parser.parse_args()
 
@@ -689,7 +910,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     data = load_normalized(args.input)
-    out = extract_predicates(data, args.min_score, args.window_size, args.motion_threshold)
+    out = extract_predicates(
+        data,
+        args.min_score,
+        args.window_size,
+        args.motion_threshold,
+        hand_motion_threshold=args.hand_motion_threshold,
+        finger_motion_threshold=args.finger_motion_threshold,
+        pinch_threshold=args.pinch_threshold,
+    )
     write_json(out, args.output, args.pretty)
     print(f"Saved predicates: {args.output}")
     print(f"Predicates: {len(out['predicates'])}")

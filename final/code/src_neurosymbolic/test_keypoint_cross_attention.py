@@ -44,7 +44,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict
         "total": total,
     }
 
-def test(args: argparse.Namespace) -> None:
+def run_evaluation(args: argparse.Namespace) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
     
     print(f"Loading checkpoint from {args.checkpoint}")
@@ -103,4 +103,4 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 if __name__ == "__main__":
-    test(parse_args())
+    run_evaluation(parse_args())

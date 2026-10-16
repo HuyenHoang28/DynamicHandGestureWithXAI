@@ -481,7 +481,12 @@ def main() -> None:
     print(f"Extracted: {total_extracted}")
     print(f"Copied from cache: {total_copied}")
     print(f"Skipped existing: {total_skipped}")
-    print(f"Available JSON after run: {total_extracted + total_copied + total_skipped}")
+    available = total_extracted + total_copied + total_skipped
+    failed = total_videos - available
+    print(f"Failed: {failed}")
+    print(f"Available JSON after run: {available}")
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

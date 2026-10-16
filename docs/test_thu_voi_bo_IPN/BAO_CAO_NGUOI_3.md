@@ -2,6 +2,10 @@
 
 Người thực hiện: Tín. Thí nghiệm: phân loại clip cử chỉ đã cắt, IPN Hand 13 lớp (B0A, B0B, G01–G11, ID 0–12), cùng split train/val/test với Người 1 và Người 2.
 
+> **Đính chính sau audit (15/10/2026):** các metric V4 trong báo cáo này chưa thể tái kiểm chứng từ artifact đang có trong repo. Gói `person3_v4_20261008_165456` chỉ chứa 2.443 graph train và 589 graph val, thiếu toàn bộ 1.101 graph test, checkpoint, history, prediction và metric V4. Cả ba SHA-256 trong `input_hashes.json` không khớp các split được đóng gói; môi trường/commit cũng khác mô tả trong báo cáo. Chênh lệch 85 clip train so với báo cáo Người 1 là do loại subject `1CM42_3`; exclusion này phải được ghi trong provenance. Chạy lại template cũ trên 589 graph val trong gói cho accuracy `0,2139`, macro-F1 `0,0595`, tie rate `0,8981`, không khớp dòng `0,054/0,070` bên dưới. Vì vậy bảng cũ được giữ như kết quả lịch sử do Người 3 báo cáo, không được xem là artifact đã xác minh. Template V2 và protocol tái lập nằm trong [KẾ HOẠCH SYMBOLIC TEMPLATE V2](./KE_HOACH_SYMBOLIC_TEMPLATE_V2.md).
+
+> **Cập nhật visual/smoke (16/10/2026):** đã xem trực tiếp một clip train và một clip validation cho đủ 13 lớp. Visual review xác nhận G10 là mở khoảng cách thumb-index, G11 là khép khoảng cách; không đảo hai lớp này. G05/G06 được sửa theo hệ tọa độ ảnh: trái của người thực hiện tương ứng `hand_moves_right`, phải tương ứng `hand_moves_left`. Vì validation đã được dùng để review semantics, đây là split phát triển/tuning; test split vẫn chưa được dùng. Smoke V2 tái tạo từ 26 mẫu đạt train macro-F1 `0,0256`, validation macro-F1 `0`; smoke chỉ xác nhận pipeline chạy hết cohort và chưa đạt gate P4, đồng thời cho thấy predicate/event còn nhiễu. Bảng template và khoảng trống bên dưới mô tả bản V1 lịch sử; xem YAML và kế hoạch V2 cho trạng thái hiện tại.
+
 ## 1. Tóm tắt
 
 | Mô hình | Val acc | Val macro-F1 | Test acc | Test macro-F1 |

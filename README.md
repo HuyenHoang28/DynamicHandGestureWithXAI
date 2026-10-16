@@ -106,6 +106,12 @@ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available
 python scripts\verify_repo.py
 ```
 
+Chạy unit test:
+
+```powershell
+python -m pytest -q
+```
+
 Nếu mọi thứ đủ, script sẽ báo `OK`.
 
 ## Chạy lại train chính

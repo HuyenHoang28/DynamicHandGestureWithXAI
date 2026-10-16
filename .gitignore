@@ -40,9 +40,7 @@ docs/keypoint_benchmark_evidence/
 docs/model_evaluation_evidence/
 
 # Local benchmark, test, demo, and report tooling
-final/code/benchmark_keypoint_models.py
 final/code/evaluate_keypoint_benchmark_downstream.py
-final/code/keypoint_benchmark_models.json
 final/code/merge_keypoint_benchmark_results.py
 /package.json
 /package-lock.json

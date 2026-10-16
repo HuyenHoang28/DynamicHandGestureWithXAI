@@ -3,7 +3,11 @@ param(
   [string]$InputVideo,
   [string]$Python = ".\.venv\Scripts\python.exe",
   [string]$Device = "cpu",
-  [string]$OutputDir = ""
+  [string]$OutputDir = "",
+  [string]$Checkpoint = "final\data\Output\checkpoints\cross_attention_v4_template170_retrain_next\best_test.pt",
+  [string]$TemplateDir = "final\data\Input\template_graphs",
+  [string]$MmposeRoot = ".venv\Lib\site-packages\mmpose\.mim",
+  [string]$PoseWeights = "final\data\Output\checkpoints\rtmw\rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth"
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,11 +64,11 @@ if ([System.IO.Path]::IsPathRooted($InputVideo)) {
 
 $PythonPath = Resolve-PathFromProject $Python
 $DemoScriptPath = Join-Path $ProjectRoot "final\code\src_neurosymbolic\demo_video_v4.py"
-$CheckpointPath = Join-Path $ProjectRoot "final\data\Output\checkpoints\cross_attention_v4_template170_retrain_next\best_test.pt"
-$TemplateDirPath = Join-Path $ProjectRoot "final\data\Input\template_graphs"
+$CheckpointPath = Resolve-PathFromProject $Checkpoint
+$TemplateDirPath = Resolve-PathFromProject $TemplateDir
 $ExtractorPath = Join-Path $ProjectRoot "keypoint_extractor\run_rtmw_splits_dual.py"
-$MmposeRootPath = Join-Path $ProjectRoot ".venv\Lib\site-packages\mmpose\.mim"
-$PoseWeightsPath = Join-Path $ProjectRoot "final\data\Output\checkpoints\rtmw\rtmw-dw-x-l_simcc-cocktail14_270e-384x288-20231122.pth"
+$MmposeRootPath = Resolve-PathFromProject $MmposeRoot
+$PoseWeightsPath = Resolve-PathFromProject $PoseWeights
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDirPath = Join-Path $ProjectRoot (Join-Path "final\outputs\demo_video_v4" ([System.IO.Path]::GetFileNameWithoutExtension($InputVideoPath)))

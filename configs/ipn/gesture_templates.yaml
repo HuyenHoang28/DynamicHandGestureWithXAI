@@ -1,17 +1,13 @@
-# Template 13 lớp IPN Hand (bỏ D0X) cho build_template_graph.py.
-# BẢN NHÁP — mô tả cử chỉ cần đối chiếu lại bằng clip thật trước khi chốt.
-# Chỉ dùng predicate mà predicates/extract_predicates.py thực sự sinh ra.
-# Lưu ý: graph_matching.py so khớp theo tập fact (có/không), không đếm số lần
-# và không xét thứ tự event, nên các cặp 1 lần / 2 lần (G01/G08, G02/G09) và
-# G07 chưa phân biệt được bằng nhánh symbolic.
-version: 1
-description: IPN Hand 13-class templates (B0A, B0B, G01-G11), label ids 0-12 from manifest
+# Temporal template V2 cho IPN Hand 13 lớp (bỏ D0X).
+# Count/order chỉ được hiệu chỉnh trên train/validation; không sửa template theo test.
+version: 2
+description: IPN Hand temporal templates, label ids 0-12 from the locked manifest
 template_policy:
-    matching:
-    required: 1.0
-    preferred: 0.6
-    optional: 0.3
-    negative: -1.0
+  matching:
+    required_weight: 1.0
+    preferred_weight: 0.6
+    optional_weight: 0.3
+    negative_weight: -1.0
 gestures:
   B0A:
     description: Pointing with one finger - index finger extended, hand moves slowly like a cursor
@@ -52,6 +48,8 @@ gestures:
     description: Click with one finger - index finger extended, taps down once
     expected_events:
       - subject: any
+        min_occurrences: 1
+        max_occurrences: 1
         hand_shapes:
           required:
             - index_extended
@@ -66,25 +64,27 @@ gestures:
       motions:
         - hand_fast_motion
     notes:
-      - Khong phan biet duoc voi G08 vi matcher khong dem so lan click.
+      - Mot event click xuong; max_occurrences tach khoi G08.
   G02:
     description: Click with two fingers - index and middle fingers extended, tap down once
     expected_events:
       - subject: any
+        min_occurrences: 1
+        max_occurrences: 1
         hand_shapes:
           required:
             - index_middle_extended
         finger_motions:
           required:
             - index_finger_moves_down
+            - middle_finger_moves_down
           preferred:
             - index_finger_moves_up
     negative_evidence:
       motions:
         - hand_fast_motion
     notes:
-      - Khong co predicate rieng cho ngon giua; dung chuyen dong ngon tro thay the.
-      - Khong phan biet duoc voi G09 vi matcher khong dem so lan click.
+      - Hai ngon phai cung co chuyen dong xuong trong active phase.
   G03:
     description: Throw up - hand moves quickly upward
     expected_events:
@@ -120,25 +120,7 @@ gestures:
         - hand_moves_left
         - hand_moves_right
   G05:
-    description: Throw left - hand moves quickly to the left
-    expected_events:
-      - subject: any
-        motions:
-          required:
-            - hand_moves_left
-          preferred:
-            - hand_fast_motion
-        hand_shapes:
-          optional:
-            - hand_open
-    negative_evidence:
-      motions:
-        - hand_moves_up
-        - hand_moves_down
-    notes:
-      - Trai/phai phu thuoc quy uoc mirror khi trich keypoint; kiem tra tren clip that.
-  G06:
-    description: Throw right - hand moves quickly to the right
+    description: Throw left from the performer's perspective - motion goes right in image coordinates
     expected_events:
       - subject: any
         motions:
@@ -154,7 +136,25 @@ gestures:
         - hand_moves_up
         - hand_moves_down
     notes:
-      - Trai/phai phu thuoc quy uoc mirror khi trich keypoint; kiem tra tren clip that.
+      - Da doi chieu theo toa do anh sau khi xem clip train va validation: trai cua nguoi thuc hien la phai tren anh.
+  G06:
+    description: Throw right from the performer's perspective - motion goes left in image coordinates
+    expected_events:
+      - subject: any
+        motions:
+          required:
+            - hand_moves_left
+          preferred:
+            - hand_fast_motion
+        hand_shapes:
+          optional:
+            - hand_open
+    negative_evidence:
+      motions:
+        - hand_moves_up
+        - hand_moves_down
+    notes:
+      - Da doi chieu theo toa do anh sau khi xem clip train va validation: phai cua nguoi thuc hien la trai tren anh.
   G07:
     description: Open twice - hand goes from closed to open, repeated two times
     expected_events:
@@ -162,21 +162,37 @@ gestures:
         hand_shapes:
           required:
             - hand_closed
+      - subject: any
+        hand_shapes:
+          required:
             - hand_open
         finger_motions:
           preferred:
             - fingers_spread_increasing
-          optional:
+      - subject: any
+        hand_shapes:
+          required:
+            - hand_closed
+        finger_motions:
+          preferred:
             - fingers_spread_decreasing
+      - subject: any
+        hand_shapes:
+          required:
+            - hand_open
+        finger_motions:
+          preferred:
+            - fingers_spread_increasing
     negative_evidence:
       motions:
         - hand_fast_motion
     notes:
-      - Matcher khong dem duoc 2 lan mo; template nay chi bat duoc dong-mo noi chung.
+      - Bon phase ordered closed-open-closed-open bieu dien hai chu ky.
   G08:
     description: Double click with one finger - index finger taps down twice
     expected_events:
       - subject: any
+        min_occurrences: 2
         hand_shapes:
           required:
             - index_extended
@@ -192,17 +208,19 @@ gestures:
       motions:
         - hand_fast_motion
     notes:
-      - index_finger_oscillates la tin hieu duy nhat gan voi double click; can kiem tra no co xuat hien o G08 ma khong o G01.
+      - Can it nhat hai event click xuong tach khoi G01.
   G09:
     description: Double click with two fingers - index and middle fingers tap down twice
     expected_events:
       - subject: any
+        min_occurrences: 2
         hand_shapes:
           required:
             - index_middle_extended
         finger_motions:
           required:
             - index_finger_moves_down
+            - middle_finger_moves_down
           preferred:
             - index_finger_oscillates
             - index_finger_moves_up
@@ -210,35 +228,38 @@ gestures:
       motions:
         - hand_fast_motion
     notes:
-      - Giong G08; can kiem tra index_finger_oscillates co tach duoc G09 voi G02.
+      - Can it nhat hai event click hai ngon tach khoi G02.
   G10:
     description: Zoom in - fingers spread apart from a pinched pose
     expected_events:
       - subject: any
         finger_motions:
           required:
+            - pinch_distance_increasing
+          preferred:
             - fingers_spread_increasing
         hand_shapes:
           optional:
             - hand_open
     negative_evidence:
       finger_motions:
-        - fingers_spread_decreasing
+        - pinch_distance_decreasing
     notes:
-      - Chieu zoom vao/ra can xac nhan lai bang clip IPN.
-      - Thieu predicate khoang cach ngon cai - ngon tro (pinch); fingers_spread chi la do xoe chung.
+      - Da xac nhan tren clip train va validation: zoom in mo khoang cach ngon cai-ngon tro.
   G11:
     description: Zoom out - fingers move together into a pinched pose
     expected_events:
       - subject: any
         finger_motions:
           required:
+            - pinch_distance_decreasing
+          preferred:
             - fingers_spread_decreasing
         hand_shapes:
           optional:
             - fingers_slightly_curled
     negative_evidence:
       finger_motions:
-        - fingers_spread_increasing
+        - pinch_distance_increasing
     notes:
-      - Chieu zoom vao/ra can xac nhan lai bang clip IPN.
+      - Da xac nhan tren clip train va validation: zoom out thu khoang cach ngon cai-ngon tro.

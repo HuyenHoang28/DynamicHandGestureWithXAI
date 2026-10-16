@@ -1,8 +1,11 @@
 import argparse
+import hashlib
 import json
-import re
+import math
 from collections import defaultdict
 from pathlib import Path
+
+import yaml
 
 
 FIELD_TO_NODE_TYPE_AND_RELATION = {
@@ -46,167 +49,115 @@ def add_edge(edges: list[dict], source: str, relation: str, target: str, propert
     )
 
 
-def parse_scalar(value: str):
-    value = value.strip()
-    if value in {"true", "false"}:
-        return value == "true"
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        return float(value)
-    except ValueError:
-        return value
-
-
 def parse_template_yaml(path: Path) -> dict:
-    # This intentionally parses only the subset used by configs/gesture_templates.yaml.
-    lines = path.read_text(encoding="utf-8").splitlines()
-    data = {
-        "version": None,
-        "description": "",
-        "template_policy": {"matching": dict(DEFAULT_WEIGHTS)},
-        "gestures": {},
-    }
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"Template file must contain a mapping: {path}")
+    gestures = raw.get("gestures")
+    if not isinstance(gestures, dict) or not gestures:
+        raise ValueError(f"Template file has no gestures: {path}")
+    version = raw.setdefault("version", 1)
+    if isinstance(version, bool) or not isinstance(version, int) or version not in {1, 2}:
+        raise ValueError("Template version must be integer 1 or 2")
 
-    current_gesture = None
-    current_event = None
-    current_category = None
-    current_level = None
-    in_policy_matching = False
-    in_gestures = False
-    in_expected_events = False
-    in_negative = False
-    in_notes = False
-    negative_category = None
+    policy = raw.setdefault("template_policy", {})
+    if not isinstance(policy, dict):
+        raise ValueError("template_policy must be a mapping")
+    matching = policy.get("matching")
+    if matching is None:
+        matching = {}
+        policy["matching"] = matching
+    if not isinstance(matching, dict):
+        raise ValueError("template_policy.matching must be a mapping")
+    for level, default in DEFAULT_WEIGHTS.items():
+        canonical = f"{level}_weight"
+        value = matching.get(
+            canonical,
+            matching.get(level, policy.get(canonical, policy.get(level, default))),
+        )
+        if isinstance(value, bool):
+            raise ValueError(f"{canonical} must be a finite number")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"{canonical} must be a finite number")
+        matching[canonical] = value
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
+    allowed_event_keys = {"subject", "min_occurrences", "max_occurrences", *FIELD_TO_NODE_TYPE_AND_RELATION}
+    for label, gesture in gestures.items():
+        if not isinstance(gesture, dict):
+            raise ValueError(f"Gesture {label} must be a mapping")
+        events = gesture.setdefault("expected_events", [])
+        if not isinstance(events, list) or not events:
+            raise ValueError(f"Gesture {label} must define expected_events")
+        for event_index, event in enumerate(events, start=1):
+            if not isinstance(event, dict):
+                raise ValueError(f"Gesture {label} event {event_index} must be a mapping")
+            unknown = set(event) - allowed_event_keys
+            if unknown:
+                raise ValueError(f"Gesture {label} event {event_index} has unsupported keys: {sorted(unknown)}")
+            event.setdefault("subject", "any")
+            min_occurrences = event.get("min_occurrences", 1)
+            if isinstance(min_occurrences, bool):
+                raise ValueError(f"Gesture {label} event {event_index} min_occurrences must be an integer")
+            event["min_occurrences"] = int(min_occurrences)
+            max_occurrences = event.get("max_occurrences")
+            if isinstance(max_occurrences, bool):
+                raise ValueError(f"Gesture {label} event {event_index} max_occurrences must be an integer")
+            event["max_occurrences"] = int(max_occurrences) if max_occurrences is not None else None
+            if event["min_occurrences"] < 1:
+                raise ValueError(f"Gesture {label} event {event_index} min_occurrences must be >= 1")
+            if event["max_occurrences"] is not None and event["max_occurrences"] < event["min_occurrences"]:
+                raise ValueError(f"Gesture {label} event {event_index} max_occurrences must be >= min_occurrences")
 
-        if re.match(r"^version:\s*", line):
-            data["version"] = parse_scalar(line.split(":", 1)[1])
-            continue
-        if re.match(r"^description:\s*", line):
-            data["description"] = line.split(":", 1)[1].strip()
-            continue
-        if line == "template_policy:":
-            in_policy_matching = False
-            in_gestures = False
-            continue
-        if line == "    matching:":
-            in_policy_matching = True
-            continue
-        if line == "gestures:":
-            in_gestures = True
-            in_policy_matching = False
-            continue
+            requirements = defaultdict(lambda: defaultdict(list))
+            for field in FIELD_TO_NODE_TYPE_AND_RELATION:
+                groups = event.get(field, {})
+                if groups is None:
+                    continue
+                if not isinstance(groups, dict):
+                    raise ValueError(f"Gesture {label} event {event_index} field {field} must be a mapping")
+                for level, values in groups.items():
+                    if level not in REQUIREMENT_LEVELS:
+                        raise ValueError(f"Gesture {label} uses unsupported requirement level: {level}")
+                    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+                        raise ValueError(f"Gesture {label} {field}.{level} must be a list of names")
+                    requirements[field][level].extend(values)
+            event["requirements"] = requirements
+            if version >= 2 and not any(
+                requirements[field].get("required")
+                for field in FIELD_TO_NODE_TYPE_AND_RELATION
+            ):
+                raise ValueError(
+                    f"Gesture {label} event {event_index} must define at least one required concept"
+                )
 
-        if in_policy_matching:
-            match = re.match(r"^    ([A-Za-z0-9_]+):\s*(.+)$", line)
-            if match:
-                data["template_policy"]["matching"][match.group(1)] = parse_scalar(match.group(2))
-            continue
+        negative = gesture.setdefault("negative_evidence", {})
+        if not isinstance(negative, dict):
+            raise ValueError(f"Gesture {label} negative_evidence must be a mapping")
+        unknown_negative = set(negative) - set(FIELD_TO_NODE_TYPE_AND_RELATION)
+        if unknown_negative:
+            raise ValueError(f"Gesture {label} has unsupported negative fields: {sorted(unknown_negative)}")
+        for field, values in negative.items():
+            if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+                raise ValueError(f"Gesture {label} negative_evidence.{field} must be a list of names")
+        gesture.setdefault("description", "")
+        gesture.setdefault("notes", [])
 
-        if not in_gestures:
-            continue
-
-        gesture_match = re.match(r"^  ([A-Za-z0-9_]+):\s*$", line)
-        if gesture_match:
-            current_gesture = gesture_match.group(1)
-            data["gestures"][current_gesture] = {
-                "description": "",
-                "expected_events": [],
-                "negative_evidence": defaultdict(list),
-                "notes": [],
-            }
-            current_event = None
-            current_category = None
-            current_level = None
-            in_expected_events = False
-            in_negative = False
-            in_notes = False
-            negative_category = None
-            continue
-
-        if current_gesture is None:
-            continue
-
-        gesture = data["gestures"][current_gesture]
-        desc_match = re.match(r"^    description:\s*(.*)$", line)
-        if desc_match:
-            gesture["description"] = desc_match.group(1).strip()
-            continue
-        if line == "    expected_events:":
-            in_expected_events = True
-            in_negative = False
-            in_notes = False
-            continue
-        if line == "    negative_evidence:":
-            in_expected_events = False
-            in_negative = True
-            in_notes = False
-            current_event = None
-            continue
-        if line == "    notes:":
-            in_expected_events = False
-            in_negative = False
-            in_notes = True
-            continue
-
-        if in_expected_events:
-            subject_match = re.match(r"^      - subject:\s*([A-Za-z0-9_]+)\s*$", line)
-            if subject_match:
-                current_event = {
-                    "subject": subject_match.group(1),
-                    "requirements": defaultdict(lambda: defaultdict(list)),
-                }
-                gesture["expected_events"].append(current_event)
-                current_category = None
-                current_level = None
-                continue
-            category_match = re.match(r"^        ([A-Za-z0-9_]+):\s*$", line)
-            if category_match and category_match.group(1) in FIELD_TO_NODE_TYPE_AND_RELATION:
-                current_category = category_match.group(1)
-                current_level = None
-                continue
-            level_match = re.match(r"^          ([A-Za-z0-9_]+):\s*$", line)
-            if level_match and level_match.group(1) in REQUIREMENT_LEVELS:
-                current_level = level_match.group(1)
-                continue
-            item_match = re.match(r"^            - ([A-Za-z0-9_]+)\s*$", line)
-            if item_match and current_event and current_category and current_level:
-                current_event["requirements"][current_category][current_level].append(item_match.group(1))
-                continue
-
-        if in_negative:
-            category_match = re.match(r"^      ([A-Za-z0-9_]+):\s*$", line)
-            if category_match and category_match.group(1) in FIELD_TO_NODE_TYPE_AND_RELATION:
-                negative_category = category_match.group(1)
-                continue
-            item_match = re.match(r"^        - ([A-Za-z0-9_]+)\s*$", line)
-            if item_match and negative_category:
-                gesture["negative_evidence"][negative_category].append(item_match.group(1))
-                continue
-
-        if in_notes:
-            note_match = re.match(r"^      - (.*)$", line)
-            if note_match:
-                gesture["notes"].append(note_match.group(1).strip())
-
-    for gesture in data["gestures"].values():
-        gesture["negative_evidence"] = dict(gesture["negative_evidence"])
-    return data
+    raw.setdefault("description", "")
+    return raw
 
 
 def load_label_ids(labels_path: Path | None, list_files: list[Path]) -> dict[str, int]:
     label_ids = {}
     if labels_path and labels_path.exists():
-        for line in labels_path.read_text(encoding="utf-8").splitlines():
-            # labels.yaml is currently sparse, but support simple "- id/name" pairs if added later.
-            pass
+        labels_data = yaml.safe_load(labels_path.read_text(encoding="utf-8"))
+        if isinstance(labels_data, dict):
+            labels_data = labels_data.get("labels", labels_data)
+        if isinstance(labels_data, dict):
+            for name, label_id in labels_data.items():
+                label_ids[str(name)] = int(label_id)
+        elif labels_data is not None:
+            raise ValueError("labels file must map label names to integer IDs")
 
     for path in list_files:
         if not path.exists():
@@ -232,15 +183,31 @@ def load_label_ids(labels_path: Path | None, list_files: list[Path]) -> dict[str
                         label = segments[idx + 1]
                     break
             if label is not None:
-                label_ids.setdefault(label, label_id)
+                existing = label_ids.get(label)
+                if existing is not None and existing != label_id:
+                    raise ValueError(f"Conflicting label IDs for {label}: {existing} and {label_id}")
+                label_ids[label] = label_id
+    by_id = defaultdict(list)
+    for label, label_id in label_ids.items():
+        by_id[label_id].append(label)
+    conflicts = {label_id: names for label_id, names in by_id.items() if len(names) > 1}
+    if conflicts:
+        raise ValueError(f"Multiple labels share an ID: {conflicts}")
     return label_ids
 
 
-def concept_node_id(node_type: str, value: str) -> str:
-    return f"{node_type.lower()}:{value}"
+def concept_node_id(node_type: str, value: str, event_id: str | None = None) -> str:
+    base = f"{node_type.lower()}:{value}"
+    return f"{event_id}:{base}" if event_id else base
 
 
-def build_template_graph(label_name: str, label_id: int, template: dict, weights: dict[str, float]) -> dict:
+def build_template_graph(
+    label_name: str,
+    label_id: int,
+    template: dict,
+    weights: dict[str, float],
+    schema_version: int = 2,
+) -> dict:
     gesture_id = f"gesture:{label_name}"
     nodes: dict[str, dict] = {}
     edges: list[dict] = []
@@ -259,9 +226,11 @@ def build_template_graph(label_name: str, label_id: int, template: dict, weights
 
     event_count = 0
     requirement_edge_count = 0
+    positive_event_ids = []
     for idx, event_template in enumerate(template.get("expected_events", []), start=1):
         event_count += 1
         event_id = f"template_event:{label_name}:{idx:03d}"
+        positive_event_ids.append(event_id)
         subject = event_template["subject"]
         add_node(
             nodes,
@@ -272,6 +241,8 @@ def build_template_graph(label_name: str, label_id: int, template: dict, weights
                 "template": True,
                 "subject": subject,
                 "ordinal": idx,
+                "min_occurrences": int(event_template.get("min_occurrences", 1)),
+                "max_occurrences": event_template.get("max_occurrences"),
             },
         )
         add_edge(
@@ -293,8 +264,13 @@ def build_template_graph(label_name: str, label_id: int, template: dict, weights
             node_type, relation = FIELD_TO_NODE_TYPE_AND_RELATION[field]
             for level, values in groups.items():
                 for value in values:
-                    node_id = concept_node_id(node_type, value)
-                    add_node(nodes, node_id, node_type, {"name": value})
+                    node_id = concept_node_id(node_type, value, event_id)
+                    add_node(
+                        nodes,
+                        node_id,
+                        node_type,
+                        {"name": value, "template_event": event_id, "ordinal": idx},
+                    )
                     add_edge(
                         edges,
                         event_id,
@@ -307,6 +283,15 @@ def build_template_graph(label_name: str, label_id: int, template: dict, weights
                         },
                     )
                     requirement_edge_count += 1
+
+    for previous, current in zip(positive_event_ids, positive_event_ids[1:]):
+        add_edge(
+            edges,
+            previous,
+            "BEFORE",
+            current,
+            {"template": True, "required": True},
+        )
 
     negative_count = 0
     for field, values in template.get("negative_evidence", {}).items():
@@ -327,8 +312,8 @@ def build_template_graph(label_name: str, label_id: int, template: dict, weights
         )
         add_edge(edges, gesture_id, "HAS_EVENT", event_id, {"template": True, "negative": True})
         for value in values:
-            node_id = concept_node_id(node_type, value)
-            add_node(nodes, node_id, node_type, {"name": value})
+            node_id = concept_node_id(node_type, value, event_id)
+            add_node(nodes, node_id, node_type, {"name": value, "template_event": event_id})
             add_edge(
                 edges,
                 event_id,
@@ -345,6 +330,8 @@ def build_template_graph(label_name: str, label_id: int, template: dict, weights
 
     return {
         "graph_type": "template_graph",
+        "schema_version": schema_version,
+        "matching_weights": dict(weights),
         "label_id": label_id,
         "label_name": label_name,
         "nodes": list(nodes.values()),
@@ -367,7 +354,7 @@ def write_json(data: dict, output_path: Path, pretty: bool) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build template KG JSON files from gesture_templates.yaml.")
-    parser.add_argument("--templates", type=Path, default=Path("configs/gesture_templates.yaml"))
+    parser.add_argument("--templates", type=Path, default=Path("configs/ipn/gesture_templates.yaml"))
     parser.add_argument("--labels", type=Path, default=Path("configs/labels.yaml"))
     parser.add_argument("--list-file", type=Path, action="append", default=[Path("train.txt"), Path("val.txt"), Path("test.txt")])
     parser.add_argument("--output-dir", type=Path, default=Path("data/template_graphs"))
@@ -381,10 +368,8 @@ def main() -> None:
     parsed = parse_template_yaml(args.templates)
     gestures = parsed["gestures"]
     weights = {
-        "required": float(parsed["template_policy"]["matching"].get("required_weight", DEFAULT_WEIGHTS["required"])),
-        "preferred": float(parsed["template_policy"]["matching"].get("preferred_weight", DEFAULT_WEIGHTS["preferred"])),
-        "optional": float(parsed["template_policy"]["matching"].get("optional_weight", DEFAULT_WEIGHTS["optional"])),
-        "negative": float(parsed["template_policy"]["matching"].get("negative_weight", DEFAULT_WEIGHTS["negative"])),
+        level: float(parsed["template_policy"]["matching"][f"{level}_weight"])
+        for level in DEFAULT_WEIGHTS
     }
     label_ids = load_label_ids(args.labels, args.list_file)
     fallback_label_ids = {label: idx for idx, label in enumerate(sorted(gestures))}
@@ -392,12 +377,22 @@ def main() -> None:
     graphs = []
     for label_name in sorted(gestures, key=lambda name: label_ids.get(name, fallback_label_ids[name])):
         label_id = label_ids.get(label_name, fallback_label_ids[label_name])
-        graph = build_template_graph(label_name, label_id, gestures[label_name], weights)
+        graph = build_template_graph(
+            label_name,
+            label_id,
+            gestures[label_name],
+            weights,
+            schema_version=int(parsed["version"]),
+        )
         graphs.append(graph)
         write_json(graph, args.output_dir / f"{label_name}.json", args.pretty)
 
     index = {
         "graph_type": "template_graph_index",
+        "schema_version": int(parsed["version"]),
+        "template_source": str(args.templates.as_posix()),
+        "template_sha256": hashlib.sha256(args.templates.read_bytes()).hexdigest(),
+        "matching_weights": weights,
         "template_count": len(graphs),
         "templates": [
             {

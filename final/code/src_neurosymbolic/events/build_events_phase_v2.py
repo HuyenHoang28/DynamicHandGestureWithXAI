@@ -18,6 +18,12 @@ CONFLICT_GROUPS = [
     {"hand_above_elbow", "hand_below_elbow"},
     {"hand_left_of_body_center", "hand_right_of_body_center"},
     {"hand_open", "hand_closed", "hand_fist_like", "fingers_slightly_curled"},
+    {
+        "elbow_very_bent",
+        "elbow_bent",
+        "elbow_half_extended",
+        "elbow_fully_extended",
+    },
     {"hand_moves_up", "hand_moves_down"},
     {"hand_moves_left", "hand_moves_right"},
     {
@@ -27,6 +33,10 @@ CONFLICT_GROUPS = [
         "hand_moves_diagonal_down_right",
     },
     {"hand_fast_motion", "hand_stationary"},
+    {"index_finger_moves_up", "index_finger_moves_down"},
+    {"middle_finger_moves_up", "middle_finger_moves_down"},
+    {"fingers_spread_increasing", "fingers_spread_decreasing"},
+    {"pinch_distance_increasing", "pinch_distance_decreasing"},
     {"hands_move_apart_horizontal", "hands_move_together_horizontal"},
     {"hands_move_same_direction_horizontal", "hands_move_opposite_direction_horizontal"},
     {"hands_move_same_direction_vertical", "hands_move_opposite_direction_vertical"},
@@ -235,6 +245,14 @@ def make_phase_event(
         names = resolve_conflicts(set(scores), scores)
         fields[field] = sorted(names)
     suppress_stationary_when_moving(fields)
+    concept_atomic_event_ids = {
+        field: {
+            name: sorted(field_sources.get(field, {}).get(name, set()))
+            for name in names
+        }
+        for field, names in fields.items()
+        if names
+    }
 
     if not any(fields.values()):
         return None
@@ -250,6 +268,7 @@ def make_phase_event(
         **fields,
         "evidence_keypoints": sorted(evidence_keypoints),
         "atomic_event_ids": sorted(set(atomic_ids)),
+        "concept_atomic_event_ids": concept_atomic_event_ids,
         "source_atomic_event_count": len(set(atomic_ids)),
         "phase_event": True,
     }
@@ -295,6 +314,13 @@ def merge_adjacent_phase_events(events: list[dict], max_phase_duration: int) -> 
             set(current.get("atomic_event_ids", [])) | set(event.get("atomic_event_ids", []))
         )
         current["source_atomic_event_count"] = len(current["atomic_event_ids"])
+        merged_sources = current.setdefault("concept_atomic_event_ids", {})
+        for field, names in event.get("concept_atomic_event_ids", {}).items():
+            field_sources = merged_sources.setdefault(field, {})
+            for name, atomic_event_ids in names.items():
+                field_sources[name] = sorted(
+                    set(field_sources.get(name, [])) | set(atomic_event_ids)
+                )
     merged.append(current)
     for idx, event in enumerate(merged, start=1):
         event["event_id"] = f"event_{idx:06d}"
@@ -371,6 +397,7 @@ def build_events_phase_v2(
         "source_path": data.get("source_path", ""),
         "events": phase_events,
         "atomic_events": atomic_events,
+        "predicate_config": data.get("predicate_config", {}),
         "summary": {
             "input_predicates": len(data.get("predicates", [])),
             "atomic_event_count": len(atomic_events),
@@ -383,6 +410,7 @@ def build_events_phase_v2(
             "min_overlap_frames": min_overlap_frames,
             "merge_adjacent": merge_adjacent,
             "builder": "phase_v2",
+            "predicate_config": data.get("predicate_config", {}),
         },
     }
 

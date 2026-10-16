@@ -148,6 +148,193 @@ def fact_strength(fact: tuple[str, str, str], evidence: dict[tuple[str, str, str
     return max(float(item.get("strength") or 0.0) for item in items)
 
 
+def instance_event_records(graph: dict) -> list[dict]:
+    """Return temporally ordered event-local facts without collapsing the clip to a set."""
+    nodes = node_map(graph)
+    subjects = event_subjects(graph)
+    records = {}
+    for node in graph.get("nodes", []):
+        if node.get("type") != "Event":
+            continue
+        props = node.get("properties", {})
+        records[node["id"]] = {
+            "event_id": node["id"],
+            "subject": subjects.get(node["id"], props.get("subject", "")),
+            "start_frame": int(props.get("start_frame") or 0),
+            "end_frame": int(props.get("end_frame") or props.get("start_frame") or 0),
+            "confidence": float(props.get("confidence", 1.0)),
+            "facts": set(),
+            "fact_occurrence_ids": {},
+            "atomic_event_ids": tuple(sorted(set(props.get("atomic_event_ids") or []))),
+        }
+    for edge in graph.get("edges", []):
+        relation = edge.get("relation")
+        record = records.get(edge.get("source"))
+        if record is None or relation not in CONCEPT_RELATIONS:
+            continue
+        concept = node_name(nodes, edge.get("target"))
+        fact = (record["subject"], relation, concept)
+        record["facts"].add(fact)
+        atomic_event_ids = (
+            edge.get("properties", {}).get("atomic_event_ids")
+            or record["atomic_event_ids"]
+        )
+        record["fact_occurrence_ids"][fact] = tuple(sorted(set(atomic_event_ids)))
+    return sorted(
+        records.values(),
+        key=lambda item: (item["start_frame"], item["end_frame"], item["event_id"]),
+    )
+
+
+def template_event_groups(graph: dict) -> list[dict]:
+    nodes = node_map(graph)
+    subjects = event_subjects(graph)
+    groups = {}
+    for node in graph.get("nodes", []):
+        if node.get("type") != "Event":
+            continue
+        props = node.get("properties", {})
+        if props.get("negative"):
+            continue
+        groups[node["id"]] = {
+            "event_id": node["id"],
+            "subject": subjects.get(node["id"], props.get("subject", "any")),
+            "ordinal": int(props.get("ordinal") or 0),
+            "min_occurrences": max(1, int(props.get("min_occurrences") or 1)),
+            "max_occurrences": (
+                int(props["max_occurrences"])
+                if props.get("max_occurrences") is not None
+                else None
+            ),
+            "requirements": [],
+        }
+    for requirement in template_requirements(graph):
+        group = groups.get(requirement["template_event"])
+        if group is not None and requirement["level"] != "negative":
+            group["requirements"].append(requirement)
+    return sorted(groups.values(), key=lambda item: (item["ordinal"], item["event_id"]))
+
+
+def event_satisfies_template(instance_event: dict, template_event: dict) -> bool:
+    required = [req for req in template_event["requirements"] if req["level"] == "required"]
+    if not required:
+        return False
+    facts = instance_event["facts"]
+    for requirement in required:
+        subject, relation, concept = requirement["fact"]
+        if subject != "any" and subject != instance_event["subject"]:
+            return False
+        if not any(
+            fact_relation == relation and fact_concept == concept
+            for _, fact_relation, fact_concept in facts
+        ):
+            return False
+    return True
+
+
+def event_occurrence_key(instance_event: dict, template_event: dict) -> tuple[str, ...]:
+    """Identify the atomic evidence behind one matched gesture occurrence.
+
+    Phase construction may split one long atomic predicate into several phase
+    events.  Counting phase nodes would turn that single gesture into a false
+    double-click, so occurrence identity is derived only from atomic evidence
+    for the template's required facts.
+    """
+
+    occurrence_ids = set()
+    for requirement in template_event["requirements"]:
+        if requirement["level"] != "required":
+            continue
+        _, relation, concept = requirement["fact"]
+        for fact, atomic_ids in instance_event.get("fact_occurrence_ids", {}).items():
+            if fact[1] == relation and fact[2] == concept:
+                occurrence_ids.update(atomic_ids)
+    if occurrence_ids:
+        return tuple(sorted(occurrence_ids))
+    return (str(instance_event["event_id"]),)
+
+
+def temporal_template_score(instance_graph: dict, template_graph: dict) -> dict:
+    template_events = template_event_groups(template_graph)
+    instance_events = instance_event_records(instance_graph)
+    if not template_events:
+        return {"score": 1.0, "matched_events": 0, "required_events": 0, "event_matches": []}
+
+    event_matches = []
+    occurrence_scores = []
+    max_occurrence_violation = False
+    for template_event in template_events:
+        matches = [event for event in instance_events if event_satisfies_template(event, template_event)]
+        minimum = template_event["min_occurrences"]
+        maximum = template_event["max_occurrences"]
+        matches_by_subject = {}
+        for event in matches:
+            matches_by_subject.setdefault(event["subject"], {})[
+                event_occurrence_key(event, template_event)
+            ] = event
+        subject_scores = []
+        for subject, unique_matches in matches_by_subject.items():
+            count = len(unique_matches)
+            subject_score = min(1.0, count / minimum)
+            if maximum is not None and count > maximum:
+                subject_score = 0.0
+            subject_scores.append((subject_score, count, subject, list(unique_matches.values())))
+        best_score, count, matched_subject, best_matches = max(
+            subject_scores,
+            default=(0.0, 0, None, []),
+            key=lambda item: (item[0], item[1], item[2] or ""),
+        )
+        score = best_score
+        if maximum is not None and count > maximum:
+            max_occurrence_violation = True
+        occurrence_scores.append(score)
+        event_matches.append(
+            {
+                "template_event": template_event["event_id"],
+                "min_occurrences": minimum,
+                "max_occurrences": maximum,
+                "observed_occurrences": count,
+                "matched_subject": matched_subject,
+                "matched_instance_events": [event["event_id"] for event in best_matches],
+            }
+        )
+
+    sequence_ratio = 1.0
+    if len(template_events) > 1:
+        best_matched = 0
+        candidate_subjects = sorted({event["subject"] for event in instance_events}) or [""]
+        for candidate_subject in candidate_subjects:
+            cursor = -1
+            matched = 0
+            for template_event in template_events:
+                found = None
+                for index in range(cursor + 1, len(instance_events)):
+                    event = instance_events[index]
+                    if event["subject"] != candidate_subject:
+                        continue
+                    if event_satisfies_template(event, template_event):
+                        found = index
+                        break
+                if found is None:
+                    break
+                cursor = found
+                matched += 1
+            best_matched = max(best_matched, matched)
+        sequence_ratio = best_matched / len(template_events)
+
+    occurrence_score = sum(occurrence_scores) / len(occurrence_scores)
+    score = 0.0 if max_occurrence_violation else occurrence_score * sequence_ratio
+    return {
+        "score": score,
+        "matched_events": round(sequence_ratio * len(template_events)),
+        "required_events": len(template_events),
+        "occurrence_score": occurrence_score,
+        "sequence_ratio": sequence_ratio,
+        "max_occurrence_violation": max_occurrence_violation,
+        "event_matches": event_matches,
+    }
+
+
 def score_template(instance_graph: dict, template_graph: dict) -> dict:
     facts, evidence = instance_facts(instance_graph)
     requirements = template_requirements(template_graph)
@@ -178,6 +365,9 @@ def score_template(instance_graph: dict, template_graph: dict) -> dict:
     raw_score = positive_score - negative_penalty
     normalized_score = raw_score / positive_total if positive_total > 0 else 0.0
     normalized_score = max(0.0, min(1.0, normalized_score)) * required_ratio
+    temporal = temporal_template_score(instance_graph, template_graph)
+    if int(template_graph.get("schema_version", 1)) >= 2:
+        normalized_score *= float(temporal["score"])
 
     return {
         "label_id": template_graph.get("label_id"),
@@ -195,6 +385,10 @@ def score_template(instance_graph: dict, template_graph: dict) -> dict:
         "matched": serialize_requirements(matched),
         "missing_required": serialize_requirements(missing_required),
         "negative_hits": serialize_requirements(negative_hits),
+        "temporal_score": round(float(temporal["score"]), 6),
+        "matched_events": temporal["matched_events"],
+        "required_events": temporal["required_events"],
+        "event_matches": temporal["event_matches"],
     }
 
 

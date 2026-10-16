@@ -63,7 +63,18 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
             for value in event.get(field, []):
                 concept_id = f"{node_type.lower()}:{value}"
                 add_node(nodes, concept_id, node_type, {"name": value})
-                add_edge(edges, event_id, relation, concept_id, {"confidence": event["confidence"]})
+                add_edge(
+                    edges,
+                    event_id,
+                    relation,
+                    concept_id,
+                    {
+                        "confidence": event["confidence"],
+                        "atomic_event_ids": event.get("concept_atomic_event_ids", {})
+                        .get(field, {})
+                        .get(value, []),
+                    },
+                )
 
         ev_node_id = f"evidence:{event['event_id']}"
         add_node(
@@ -85,8 +96,10 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
 
     return {
         "graph_type": "instance_graph",
+        "schema_version": 2,
         "video_id": video_id,
         "source_path": data.get("source_path", ""),
+        "predicate_config": data.get("predicate_config", {}),
         "nodes": list(nodes.values()),
         "edges": edges,
         "summary": {
@@ -95,6 +108,7 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
             "edge_count": len(edges),
             "event_builder": data.get("summary", {}).get("builder", "phase_v2"),
             "temporal_scope": "per_subject",
+            "predicate_config": data.get("predicate_config", {}),
         },
     }
 
