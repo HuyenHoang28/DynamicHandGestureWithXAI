@@ -11,12 +11,79 @@ from dataset import NeuralOnlyKeypointDataset, collate_batch, label_names_from_s
 from models import NeuralOnlyClassifier
 
 
+def macro_f1(predictions: list[int], labels: list[int], num_classes: int) -> float:
+    scores = []
+    for class_id in range(num_classes):
+        support = sum(label == class_id for label in labels)
+        true_positive = sum(
+            pred == class_id and label == class_id for pred, label in zip(predictions, labels)
+        )
+        predicted = sum(pred == class_id for pred in predictions)
+        precision = true_positive / predicted if predicted else 0.0
+        recall = true_positive / support if support else 0.0
+        scores.append(2 * precision * recall / (precision + recall) if precision + recall else 0.0)
+    return sum(scores) / max(len(scores), 1)
+
+
+def augment_keypoints(
+    keypoints: torch.Tensor,
+    jitter_std: float,
+    frame_mask_probability: float,
+    keypoint_dropout_probability: float,
+) -> torch.Tensor:
+    """Apply label-preserving noise without turning missing joints into fake joints."""
+    output = keypoints.clone()
+    point_valid = output[..., 2] > 0 if output.shape[-1] >= 3 else torch.ones_like(
+        output[..., 0], dtype=torch.bool
+    )
+    if jitter_std > 0:
+        noise = torch.randn_like(output[..., :2]) * jitter_std
+        output[..., :2] += noise * point_valid.unsqueeze(-1)
+    if frame_mask_probability > 0:
+        frame_mask = torch.rand(output.shape[:2], device=output.device) < frame_mask_probability
+        output = output.masked_fill(frame_mask[:, :, None, None], 0.0)
+    if keypoint_dropout_probability > 0:
+        point_mask = torch.rand(output.shape[:3], device=output.device) < keypoint_dropout_probability
+        output = output.masked_fill(point_mask.unsqueeze(-1), 0.0)
+    return output
+
+
+def class_weights(samples: list[tuple[str, int]], num_classes: int, power: float) -> torch.Tensor | None:
+    labels = [label for _, label in samples]
+    invalid = sorted({label for label in labels if label < 0 or label >= num_classes})
+    if invalid:
+        raise ValueError(f"Labels outside [0, {num_classes - 1}]: {invalid}")
+    counts = torch.bincount(torch.tensor(labels), minlength=num_classes).float()
+    missing = torch.where(counts == 0)[0].tolist()
+    if missing:
+        raise ValueError(f"Training split has no samples for class IDs: {missing}")
+    if power <= 0:
+        return None
+    weights = counts.mean().div(counts).pow(power)
+    return weights / weights.mean()
+
+
+def validate_no_split_overlap(
+    train_samples: list[tuple[str, int]], val_samples: list[tuple[str, int]]
+) -> None:
+    train_labels = {source.replace("\\", "/").casefold(): label for source, label in train_samples}
+    overlap = []
+    for source, label in val_samples:
+        key = source.replace("\\", "/").casefold()
+        if key in train_labels:
+            overlap.append((source, train_labels[key], label))
+    if overlap:
+        raise ValueError(f"Train/validation overlap detected ({len(overlap)} samples), e.g. {overlap[:3]}")
+
+
 @torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict:
+def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, num_classes: int) -> dict:
     model.eval()
     total = 0
     correct = 0
     loss_sum = 0.0
+    predictions = []
+    targets = []
     criterion = nn.CrossEntropyLoss()
     for batch in loader:
         x = batch["keypoints"].to(device)
@@ -24,12 +91,15 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict
         logits = model(x)
         loss = criterion(logits, y)
         pred = logits.argmax(dim=1)
+        predictions.extend(pred.tolist())
+        targets.extend(y.tolist())
         total += y.numel()
         correct += int((pred == y).sum().item())
         loss_sum += float(loss.item()) * y.numel()
     return {
         "loss": loss_sum / max(total, 1),
         "accuracy": correct / max(total, 1),
+        "macro_f1": macro_f1(predictions, targets, num_classes),
         "total": total,
     }
 
@@ -43,6 +113,7 @@ def train(args: argparse.Namespace) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
     train_set = NeuralOnlyKeypointDataset(args.train_file, args.cache_root, "train", args.num_frames, args.limit_train)
     val_set = NeuralOnlyKeypointDataset(args.val_file, args.cache_root, "val", args.num_frames, args.limit_val)
+    validate_no_split_overlap(train_set.samples, val_set.samples)
     train_generator = torch.Generator()
     train_generator.manual_seed(args.seed)
     train_loader = DataLoader(
@@ -70,6 +141,8 @@ def train(args: argparse.Namespace) -> None:
         layers=args.layers,
         heads=args.heads,
         dropout=args.dropout,
+        use_motion_features=not args.disable_motion_features,
+        pooling=args.pooling,
     ).to(device)
     if torch.cuda.is_available() and torch.cuda.device_count() > 1 and args.data_parallel:
         print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
@@ -82,10 +155,16 @@ def train(args: argparse.Namespace) -> None:
         patience=args.scheduler_patience,
         min_lr=args.min_lr,
     )
-    criterion = nn.CrossEntropyLoss()
+    weights = class_weights(train_set.samples, args.num_classes, args.class_weight_power)
+    criterion = nn.CrossEntropyLoss(
+        weight=weights.to(device) if weights is not None else None,
+        label_smoothing=args.label_smoothing,
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     label_names = label_names_from_split(args.train_file)
-    best_acc = -1.0
+    best_metric_value = -1.0
+    best_accuracy = -1.0
+    max_val_accuracy = -1.0
     best_epoch = 0
     epochs_without_improvement = 0
     history = []
@@ -97,6 +176,12 @@ def train(args: argparse.Namespace) -> None:
         for step, batch in enumerate(train_loader, start=1):
             x = batch["keypoints"].to(device)
             y = batch["label"].to(device)
+            x = augment_keypoints(
+                x,
+                args.jitter_std,
+                args.frame_mask_probability,
+                args.keypoint_dropout_probability,
+            )
             optimizer.zero_grad(set_to_none=True)
             logits = model(x)
             loss = criterion(logits, y)
@@ -117,11 +202,14 @@ def train(args: argparse.Namespace) -> None:
             "accuracy": correct / max(total, 1),
             "total": total,
         }
-        val_metrics = evaluate(model, val_loader, device)
-        scheduler.step(float(val_metrics["accuracy"]))
-        improved = val_metrics["accuracy"] > best_acc + args.early_stop_min_delta
+        val_metrics = evaluate(model, val_loader, device, args.num_classes)
+        val_score = float(val_metrics[args.select_metric])
+        scheduler.step(val_score)
+        improved = val_score > best_metric_value + args.early_stop_min_delta
+        max_val_accuracy = max(max_val_accuracy, float(val_metrics["accuracy"]))
         if improved:
-            best_acc = val_metrics["accuracy"]
+            best_metric_value = val_score
+            best_accuracy = float(val_metrics["accuracy"])
             best_epoch = epoch
             epochs_without_improvement = 0
         else:
@@ -135,7 +223,9 @@ def train(args: argparse.Namespace) -> None:
                 "learning_rates": learning_rates,
                 "improved": improved,
                 "best_epoch": best_epoch,
-                "best_accuracy": best_acc,
+                "best_accuracy": best_accuracy,
+                "max_val_accuracy": max_val_accuracy,
+                "best_metric_value": best_metric_value,
                 "epochs_without_improvement": epochs_without_improvement,
             }
         )
@@ -143,6 +233,7 @@ def train(args: argparse.Namespace) -> None:
             f"backbone={args.backbone} epoch={epoch} "
             f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['accuracy']:.4f} "
             f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['accuracy']:.4f} "
+            f"val_macro_f1={val_metrics['macro_f1']:.4f} select={args.select_metric} "
             f"lr={','.join(f'{value:.2e}' for value in learning_rates)} "
             f"patience={epochs_without_improvement}/{args.early_stop_patience}"
         )
@@ -153,7 +244,10 @@ def train(args: argparse.Namespace) -> None:
             "epoch": epoch,
             "val": val_metrics,
             "best_epoch": best_epoch,
-            "best_accuracy": best_acc,
+            "best_accuracy": best_accuracy,
+            "max_val_accuracy": max_val_accuracy,
+            "select_metric": args.select_metric,
+            "best_metric_value": best_metric_value,
             "epochs_without_improvement": epochs_without_improvement,
         }
         torch.save(checkpoint, args.output_dir / "last.pt")
@@ -161,10 +255,13 @@ def train(args: argparse.Namespace) -> None:
             torch.save(checkpoint, args.output_dir / "best.pt")
         (args.output_dir / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
         if epochs_without_improvement >= args.early_stop_patience:
-            print(f"Early stopping at epoch {epoch}; best_epoch={best_epoch} best_val_acc={best_acc:.4f}")
+            print(
+                f"Early stopping at epoch {epoch}; best_epoch={best_epoch} "
+                f"best_val_{args.select_metric}={best_metric_value:.4f}"
+            )
             break
     print(f"best epoch: {best_epoch}")
-    print(f"best val acc: {best_acc:.4f}")
+    print(f"best val {args.select_metric}: {best_metric_value:.4f}")
     print(f"saved: {args.output_dir}")
 
 
@@ -186,6 +283,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layers", type=int, default=3)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--pooling", choices=["mean", "masked_mean", "attention"], default="attention")
+    parser.add_argument("--disable-motion-features", action="store_true")
+    parser.add_argument("--label-smoothing", type=float, default=0.05)
+    parser.add_argument("--class-weight-power", type=float, default=0.5)
+    parser.add_argument("--jitter-std", type=float, default=0.005)
+    parser.add_argument("--frame-mask-probability", type=float, default=0.05)
+    parser.add_argument("--keypoint-dropout-probability", type=float, default=0.03)
     parser.add_argument("--scheduler-factor", type=float, default=0.5)
     parser.add_argument("--scheduler-patience", type=int, default=2)
     parser.add_argument("--min-lr", type=float, default=1e-6)
@@ -198,6 +302,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-val", type=int)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--data-parallel", action="store_true")
+    parser.add_argument("--select-metric", choices=["accuracy", "macro_f1"], default="macro_f1")
     return parser.parse_args()
 
 

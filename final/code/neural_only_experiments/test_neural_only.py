@@ -12,6 +12,31 @@ from dataset import NeuralOnlyKeypointDataset, collate_batch
 from models import NeuralOnlyClassifier
 
 
+def classification_metrics(predictions: list[int], labels: list[int], num_classes: int) -> dict:
+    per_class = []
+    f1_values = []
+    for class_id in range(num_classes):
+        support = sum(label == class_id for label in labels)
+        predicted = sum(pred == class_id for pred in predictions)
+        true_positive = sum(
+            pred == class_id and label == class_id for pred, label in zip(predictions, labels)
+        )
+        precision = true_positive / predicted if predicted else 0.0
+        recall = true_positive / support if support else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        f1_values.append(f1)
+        per_class.append(
+            {
+                "class_id": class_id,
+                "support": support,
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+            }
+        )
+    return {"macro_f1": sum(f1_values) / max(len(f1_values), 1), "per_class": per_class}
+
+
 @torch.no_grad()
 def run_evaluation(args: argparse.Namespace) -> None:
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
@@ -35,6 +60,8 @@ def run_evaluation(args: argparse.Namespace) -> None:
         layers=model_args.layers,
         heads=model_args.heads,
         dropout=model_args.dropout,
+        use_motion_features=getattr(model_args, "disable_motion_features", True) is False,
+        pooling=getattr(model_args, "pooling", "mean"),
     ).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
@@ -45,6 +72,8 @@ def run_evaluation(args: argparse.Namespace) -> None:
     rows = []
     inference_seconds = 0.0
     timed_samples = 0
+    predictions = []
+    targets = []
     for batch_index, batch in enumerate(loader):
         x = batch["keypoints"].to(device)
         y = batch["label"].to(device)
@@ -61,8 +90,10 @@ def run_evaluation(args: argparse.Namespace) -> None:
             timed_samples += y.numel() * args.timing_repeats
         loss = criterion(logits, y)
         probs = logits.softmax(dim=1)
-        values, indices = probs.topk(k=5, dim=1)
+        values, indices = probs.topk(k=min(5, model_args.num_classes), dim=1)
         pred = indices[:, 0]
+        predictions.extend(pred.tolist())
+        targets.extend(y.tolist())
         total += y.numel()
         correct += int((pred == y).sum().item())
         loss_sum += float(loss.item()) * y.numel()
@@ -81,10 +112,12 @@ def run_evaluation(args: argparse.Namespace) -> None:
                     "top_probs": " ".join(f"{float(value):.6f}" for value in values[i].tolist()),
                 }
             )
+    detailed_metrics = classification_metrics(predictions, targets, model_args.num_classes)
     metrics = {
         "backbone": model_args.backbone,
         "loss": loss_sum / max(total, 1),
         "accuracy": correct / max(total, 1),
+        **detailed_metrics,
         "correct": correct,
         "wrong": total - correct,
         "total": total,
@@ -105,10 +138,11 @@ def run_evaluation(args: argparse.Namespace) -> None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         pred_path = args.output.with_name("predictions.csv")
-        with pred_path.open("w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
+        if rows:
+            with pred_path.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
         print(f"saved metrics: {args.output}")
         print(f"saved predictions: {pred_path}")
 

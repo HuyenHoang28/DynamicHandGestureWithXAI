@@ -6,13 +6,20 @@ from torch.utils.data import Dataset
 
 def read_split_file(path: Path) -> list[tuple[str, int]]:
     samples = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = line.strip()
         if not line:
             continue
         parts = line.rsplit(maxsplit=2)
-        if len(parts) == 3:
-            samples.append((parts[0], int(parts[2])))
+        if len(parts) != 3:
+            raise ValueError(f"Malformed split entry at {path}:{line_number}: {line!r}")
+        try:
+            label = int(parts[2])
+        except ValueError as exc:
+            raise ValueError(f"Invalid label at {path}:{line_number}: {parts[2]!r}") from exc
+        samples.append((parts[0], label))
+    if not samples:
+        raise ValueError(f"Split file contains no samples: {path}")
     return samples
 
 
@@ -44,33 +51,34 @@ def cache_path_for_source(source: str, cache_root: Path, num_frames: int, fallba
     split, label, filename = source_info(source, fallback_split)
     if label is None:
         return None
-    candidates = [
-        base / split / label / f"{filename}.pt",
-        base / label / f"{filename}.pt",
-    ]
+    split_candidates = [base / split / label / f"{filename}.pt"]
+    legacy_candidates = [base / label / f"{filename}.pt"]
     prefix = f"{label}_"
     rest = filename[len(prefix):] if filename.startswith(prefix) else filename
     tokens = rest.split("_")
     if len(tokens) >= 3 and tokens[0].startswith("Subject"):
         subject = "_".join(tokens[:2])
         clip_name = "_".join(tokens[2:])
-        candidates.extend(
-            [
-                base / split / label / subject / f"{clip_name}.pt",
-                base / label / subject / f"{clip_name}.pt",
-            ]
-        )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    for pattern in [
-        f"{split}/{label}/**/{filename}.pt",
-        f"{label}/**/{filename}.pt",
-        f"**/{filename}.pt",
-    ]:
-        hits = list(base.glob(pattern))
-        if hits:
-            return hits[0]
+        split_candidates.append(base / split / label / subject / f"{clip_name}.pt")
+        legacy_candidates.append(base / label / subject / f"{clip_name}.pt")
+
+    split_hits = [candidate for candidate in split_candidates if candidate.exists()]
+    split_hits.extend(base.glob(f"{split}/{label}/**/{filename}.pt"))
+    split_hits = list(dict.fromkeys(split_hits))
+    if len(split_hits) == 1:
+        return split_hits[0]
+    if len(split_hits) > 1:
+        raise RuntimeError(f"Ambiguous cache tensor (split-scoped) for {source}: {split_hits}")
+
+    # Never search the entire cache tree by filename alone: different splits or
+    # classes commonly reuse clip names, which can silently load the wrong sample.
+    legacy_hits = [candidate for candidate in legacy_candidates if candidate.exists()]
+    legacy_hits.extend(base.glob(f"{label}/**/{filename}.pt"))
+    legacy_hits = list(dict.fromkeys(legacy_hits))
+    if len(legacy_hits) == 1:
+        return legacy_hits[0]
+    if len(legacy_hits) > 1:
+        raise RuntimeError(f"Ambiguous cache tensor (legacy) for {source}: {legacy_hits}")
     return None
 
 
@@ -98,8 +106,16 @@ class NeuralOnlyKeypointDataset(Dataset):
         path = cache_path_for_source(source, self.cache_root, self.num_frames, self.split)
         if path is None or not path.exists():
             raise FileNotFoundError(f"Cache tensor not found for split entry: {source}")
+        keypoints = torch.load(path, map_location="cpu", weights_only=True).float()
+        if keypoints.ndim != 3 or keypoints.shape[0] != self.num_frames:
+            raise ValueError(
+                f"Expected cache tensor [T,K,C] with T={self.num_frames}, "
+                f"got {tuple(keypoints.shape)} at {path}"
+            )
+        if not torch.isfinite(keypoints).all():
+            raise ValueError(f"Cache tensor contains NaN/Inf: {path}")
         return {
-            "keypoints": torch.load(path, map_location="cpu").float(),
+            "keypoints": keypoints,
             "label": torch.tensor(label, dtype=torch.long),
             "path": source,
         }

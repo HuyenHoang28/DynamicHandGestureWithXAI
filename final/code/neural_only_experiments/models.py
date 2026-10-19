@@ -140,11 +140,18 @@ class NeuralOnlyClassifier(nn.Module):
         layers: int = 3,
         heads: int = 4,
         dropout: float = 0.1,
+        use_motion_features: bool = True,
+        pooling: str = "attention",
     ) -> None:
         super().__init__()
         self.backbone = backbone
+        self.num_keypoints = num_keypoints
+        self.input_dims = input_dims
+        self.use_motion_features = use_motion_features
+        self.pooling = pooling
+        feature_dims = input_dims + (2 if use_motion_features else 0)
         self.input_proj = nn.Sequential(
-            nn.Linear(num_keypoints * input_dims, d_model),
+            nn.Linear(num_keypoints * feature_dims, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -159,6 +166,14 @@ class NeuralOnlyClassifier(nn.Module):
             self.encoder = MLPMixerEncoder(d_model, layers, dropout, num_frames)
         else:
             raise ValueError(f"Unknown backbone: {backbone}")
+        if pooling == "attention":
+            self.pool_score = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.Tanh(),
+                nn.Linear(d_model // 2, 1),
+            )
+        elif pooling not in {"mean", "masked_mean"}:
+            raise ValueError(f"Unknown pooling: {pooling}")
         self.classifier = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, d_model),
@@ -169,8 +184,37 @@ class NeuralOnlyClassifier(nn.Module):
 
     def forward(self, keypoints: torch.Tensor) -> torch.Tensor:
         batch, frames, keypoints_count, dims = keypoints.shape
-        x = keypoints.reshape(batch, frames, keypoints_count * dims)
+        if keypoints_count != self.num_keypoints or dims != self.input_dims:
+            raise ValueError(
+                f"Expected [B,T,{self.num_keypoints},{self.input_dims}], got {tuple(keypoints.shape)}"
+            )
+        frame_valid = keypoints[..., 2].amax(dim=2) > 0 if dims >= 3 else torch.ones(
+            (batch, frames), dtype=torch.bool, device=keypoints.device
+        )
+        features = keypoints
+        if self.use_motion_features:
+            velocity = torch.zeros_like(keypoints[..., :2])
+            velocity[:, 1:] = keypoints[:, 1:, :, :2] - keypoints[:, :-1, :, :2]
+            if dims >= 3:
+                point_valid = keypoints[..., 2] > 0
+                pair_valid = point_valid[:, 1:] & point_valid[:, :-1]
+                velocity[:, 1:] *= pair_valid.unsqueeze(-1)
+            features = torch.cat([keypoints, velocity], dim=-1)
+        x = features.reshape(batch, frames, -1)
         x = self.input_proj(x)
         tokens = self.encoder(x)
-        pooled = tokens.mean(dim=1)
+        if self.pooling == "mean":
+            # Exact legacy behavior for old checkpoints and controlled ablations.
+            pooled = tokens.mean(dim=1)
+        elif self.pooling == "masked_mean":
+            weights = frame_valid.to(tokens.dtype)
+            weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
+            pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
+        else:
+            scores = self.pool_score(tokens).squeeze(-1)
+            scores = scores.masked_fill(~frame_valid, torch.finfo(scores.dtype).min)
+            all_invalid = ~frame_valid.any(dim=1)
+            scores = torch.where(all_invalid.unsqueeze(1), torch.zeros_like(scores), scores)
+            weights = scores.softmax(dim=1)
+            pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
         return self.classifier(pooled)
