@@ -8,33 +8,111 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from dataset import NeuralOnlyKeypointDataset, collate_batch
+from dataset import NeuralOnlyKeypointDataset, collate_batch, label_names_from_split
 from models import NeuralOnlyClassifier
 
 
-def classification_metrics(predictions: list[int], labels: list[int], num_classes: int) -> dict:
+def classification_metrics(
+    predictions: list[int],
+    labels: list[int],
+    num_classes: int,
+    label_names: dict[int, str] | None = None,
+) -> dict:
+    """Compute class-level metrics and the true-by-predicted confusion matrix.
+
+    ``accuracy`` in each per-class row is the class recall (correct samples
+    divided by the number of true samples for that class).  ``label_names`` is
+    optional to preserve the original three-argument API; missing names fall
+    back to the numeric class ID as a string.
+    """
+    if len(predictions) != len(labels):
+        raise ValueError(
+            f"Prediction/label length mismatch: {len(predictions)} != {len(labels)}"
+        )
+    invalid_predictions = sorted({value for value in predictions if value < 0 or value >= num_classes})
+    invalid_labels = sorted({value for value in labels if value < 0 or value >= num_classes})
+    if invalid_predictions or invalid_labels:
+        raise ValueError(
+            f"Class IDs outside [0, {num_classes - 1}]: "
+            f"predictions={invalid_predictions}, labels={invalid_labels}"
+        )
     per_class = []
+    confusion_matrix = [[0 for _ in range(num_classes)] for _ in range(num_classes)]
+    precision_values = []
+    recall_values = []
     f1_values = []
+    for pred, label in zip(predictions, labels):
+        confusion_matrix[label][pred] += 1
     for class_id in range(num_classes):
         support = sum(label == class_id for label in labels)
         predicted = sum(pred == class_id for pred in predictions)
-        true_positive = sum(
-            pred == class_id and label == class_id for pred, label in zip(predictions, labels)
-        )
-        precision = true_positive / predicted if predicted else 0.0
-        recall = true_positive / support if support else 0.0
+        correct = confusion_matrix[class_id][class_id]
+        precision = correct / predicted if predicted else 0.0
+        recall = correct / support if support else 0.0
         f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        precision_values.append(precision)
+        recall_values.append(recall)
         f1_values.append(f1)
         per_class.append(
             {
                 "class_id": class_id,
+                "label_name": (label_names or {}).get(class_id, str(class_id)),
                 "support": support,
+                "correct": correct,
+                "predicted": predicted,
+                "accuracy": recall,
                 "precision": precision,
                 "recall": recall,
                 "f1": f1,
             }
         )
-    return {"macro_f1": sum(f1_values) / max(len(f1_values), 1), "per_class": per_class}
+    macro_precision = sum(precision_values) / max(len(precision_values), 1)
+    macro_recall = sum(recall_values) / max(len(recall_values), 1)
+    macro_f1 = sum(f1_values) / max(len(f1_values), 1)
+    present_recalls = [row["recall"] for row in per_class if row["support"] > 0]
+    return {
+        "confusion_matrix": confusion_matrix,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "balanced_accuracy": sum(present_recalls) / max(len(present_recalls), 1),
+        "per_class": per_class,
+    }
+
+
+def validate_evaluation_label_contract(
+    samples: list[tuple[str, int]],
+    num_classes: int,
+    checkpoint_label_names: dict[int, str],
+    evaluation_label_names: dict[int, str],
+) -> None:
+    """Reject incompatible output dimensions or label-ID semantics before inference."""
+    invalid = sorted({label for _, label in samples if label < 0 or label >= num_classes})
+    if invalid:
+        raise ValueError(
+            f"Evaluation labels outside checkpoint output range [0, {num_classes - 1}]: {invalid}. "
+            "Retrain a checkpoint with the target dataset's --num-classes; do not reuse an "
+            "incompatible classifier head."
+        )
+    used_ids = sorted({label for _, label in samples})
+    missing_checkpoint_names = [class_id for class_id in used_ids if class_id not in checkpoint_label_names]
+    missing_evaluation_names = [class_id for class_id in used_ids if class_id not in evaluation_label_names]
+    if missing_checkpoint_names or missing_evaluation_names:
+        raise ValueError(
+            "Incomplete label mapping for evaluated classes: "
+            f"checkpoint_missing={missing_checkpoint_names}, "
+            f"evaluation_missing={missing_evaluation_names}"
+        )
+    mismatches = {
+        class_id: {
+            "checkpoint": checkpoint_label_names[class_id],
+            "evaluation": evaluation_label_names[class_id],
+        }
+        for class_id in used_ids
+        if checkpoint_label_names[class_id] != evaluation_label_names[class_id]
+    }
+    if mismatches:
+        raise ValueError(f"Checkpoint/evaluation label mapping mismatch: {mismatches}")
 
 
 @torch.no_grad()
@@ -44,6 +122,13 @@ def run_evaluation(args: argparse.Namespace) -> None:
     model_args = argparse.Namespace(**checkpoint["args"])
     label_names = {int(k): v for k, v in checkpoint.get("label_names", {}).items()}
     test_set = NeuralOnlyKeypointDataset(args.test_file, args.cache_root, "test", model_args.num_frames)
+    evaluation_label_names = label_names_from_split(args.test_file)
+    validate_evaluation_label_contract(
+        test_set.samples,
+        model_args.num_classes,
+        label_names,
+        evaluation_label_names,
+    )
     loader = DataLoader(
         test_set,
         batch_size=args.batch_size,
@@ -112,7 +197,12 @@ def run_evaluation(args: argparse.Namespace) -> None:
                     "top_probs": " ".join(f"{float(value):.6f}" for value in values[i].tolist()),
                 }
             )
-    detailed_metrics = classification_metrics(predictions, targets, model_args.num_classes)
+    detailed_metrics = classification_metrics(
+        predictions,
+        targets,
+        model_args.num_classes,
+        label_names=label_names,
+    )
     metrics = {
         "backbone": model_args.backbone,
         "loss": loss_sum / max(total, 1),

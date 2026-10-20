@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -7,11 +8,12 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 NEURAL_ONLY_DIR = ROOT / "final" / "code" / "neural_only_experiments"
+NEURAL_COLAB_NOTEBOOK = ROOT / "notebooks" / "Neural_Only_Improved_Colab.ipynb"
 sys.path.insert(0, str(NEURAL_ONLY_DIR))
 
-from dataset import cache_path_for_source  # noqa: E402
+from dataset import cache_path_for_source, label_names_from_split  # noqa: E402
 from models import NeuralOnlyClassifier  # noqa: E402
-from test_neural_only import classification_metrics  # noqa: E402
+from test_neural_only import classification_metrics, validate_evaluation_label_contract  # noqa: E402
 from train_neural_only import (  # noqa: E402
     augment_keypoints,
     class_weights,
@@ -185,6 +187,161 @@ def test_macro_f1_penalizes_predictions_into_absent_class() -> None:
     assert classification_metrics(predictions, labels, 3)["macro_f1"] == pytest.approx(1 / 3)
 
 
+def test_classification_metrics_reports_exact_class_metrics_and_labels() -> None:
+    result = classification_metrics(
+        predictions=[0, 1, 1, 2, 2],
+        labels=[0, 0, 1, 2, 2],
+        num_classes=3,
+        label_names={0: "wave", 1: "fist", 2: "open"},
+    )
+
+    assert result["confusion_matrix"] == [[1, 1, 0], [0, 1, 0], [0, 0, 2]]
+    assert result["macro_precision"] == pytest.approx((1.0 + 1 / 2 + 1.0) / 3)
+    assert result["macro_recall"] == pytest.approx((1 / 2 + 1.0 + 1.0) / 3)
+    assert result["macro_f1"] == pytest.approx((2 / 3 + 2 / 3 + 1.0) / 3)
+    assert result["balanced_accuracy"] == result["macro_recall"]
+    assert result["per_class"] == [
+        {
+            "class_id": 0,
+            "label_name": "wave",
+            "support": 2,
+            "correct": 1,
+            "predicted": 1,
+            "accuracy": 0.5,
+            "precision": 1.0,
+            "recall": 0.5,
+            "f1": 2 / 3,
+        },
+        {
+            "class_id": 1,
+            "label_name": "fist",
+            "support": 1,
+            "correct": 1,
+            "predicted": 2,
+            "accuracy": 1.0,
+            "precision": 0.5,
+            "recall": 1.0,
+            "f1": 2 / 3,
+        },
+        {
+            "class_id": 2,
+            "label_name": "open",
+            "support": 2,
+            "correct": 2,
+            "predicted": 2,
+            "accuracy": 1.0,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+        },
+    ]
+
+
+def test_classification_metrics_rejects_invalid_inputs() -> None:
+    with pytest.raises(ValueError, match="length mismatch"):
+        classification_metrics([0], [0, 1], 2)
+    with pytest.raises(ValueError, match="outside"):
+        classification_metrics([-1], [0], 2)
+    with pytest.raises(ValueError, match="outside"):
+        classification_metrics([0], [2], 2)
+
+
+def test_balanced_accuracy_averages_only_classes_with_support() -> None:
+    result = classification_metrics([0, 0], [0, 1], num_classes=3)
+    assert result["macro_recall"] == pytest.approx((1.0 + 0.0 + 0.0) / 3)
+    assert result["balanced_accuracy"] == pytest.approx((1.0 + 0.0) / 2)
+
+
+def test_evaluation_rejects_labels_outside_checkpoint_output_range() -> None:
+    with pytest.raises(ValueError, match="outside checkpoint output range"):
+        validate_evaluation_label_contract(
+            [("dataset/test/class_13/clip.json", 13)],
+            num_classes=13,
+            checkpoint_label_names={0: "B0A"},
+            evaluation_label_names={13: "OLD_13"},
+        )
+
+
+def test_evaluation_rejects_same_id_with_different_label_semantics() -> None:
+    with pytest.raises(ValueError, match="label mapping mismatch"):
+        validate_evaluation_label_contract(
+            [("dataset/test/G01/clip.json", 0)],
+            num_classes=13,
+            checkpoint_label_names={0: "B0A"},
+            evaluation_label_names={0: "G01"},
+        )
+
+
+def test_evaluation_rejects_incomplete_label_metadata() -> None:
+    with pytest.raises(ValueError, match="Incomplete label mapping"):
+        validate_evaluation_label_contract(
+            [("dataset/test/B0A/clip.json", 0)],
+            num_classes=13,
+            checkpoint_label_names={},
+            evaluation_label_names={0: "B0A"},
+        )
+
+
+def test_evaluation_accepts_matching_label_contract() -> None:
+    validate_evaluation_label_contract(
+        [("dataset/test/B0A/clip.json", 0), ("dataset/test/G01/clip.json", 2)],
+        num_classes=13,
+        checkpoint_label_names={0: "B0A", 2: "G01"},
+        evaluation_label_names={0: "B0A", 2: "G01"},
+    )
+
+
+def test_label_names_reject_conflicting_id_or_name_mapping(tmp_path: Path) -> None:
+    conflicting_id = tmp_path / "conflicting_id.txt"
+    conflicting_id.write_text(
+        "dataset/train/B0A/a.json unused 0\n"
+        "dataset/train/G01/b.json unused 0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Conflicting label names"):
+        label_names_from_split(conflicting_id)
+
+    conflicting_name = tmp_path / "conflicting_name.txt"
+    conflicting_name.write_text(
+        "dataset/train/B0A/a.json unused 0\n"
+        "dataset/train/B0A/b.json unused 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="maps to multiple IDs"):
+        label_names_from_split(conflicting_name)
+
+
 def test_split_overlap_is_rejected_after_path_normalization() -> None:
     with pytest.raises(ValueError, match="overlap"):
         validate_no_split_overlap([("Data\\Clip.JSON", 0)], [("data/clip.json", 0)])
+
+
+def test_neural_colab_notebook_keeps_locked_test_off_and_writes_artifacts() -> None:
+    notebook = json.loads(NEURAL_COLAB_NOTEBOOK.read_text(encoding="utf-8"))
+    code_cells = [
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if cell.get("cell_type") == "code"
+    ]
+    code = "\n".join(code_cells)
+    locked_code = next(cell for cell in code_cells if "FINAL_TEST_SEEDS" in cell)
+    assert "RUN_LOCKED_TEST = False" in code
+    assert "FINAL_TEST_SEEDS = SEEDS if RUN_ALL_SEEDS else SEEDS[:1]" in code
+    assert "ALLOW_LOCKED_TEST_OVERWRITE = False" in code
+    assert "locked_test" in code
+    assert "LOCKED_TEST_COMPLETE.json" in code
+    assert "provenance.json" in code
+    assert "checkpoint_sha256" in code
+    assert "test_file_sha256" in code
+    assert "completed_at_utc" in code
+    assert "trained_dirs" not in locked_code
+    assert locked_code.index("report_path.write_text") < locked_code.index("provenance_path.write_text")
+    assert locked_code.index("provenance_path.write_text") < locked_code.index("completion_marker.write_text")
+    for artifact_name in (
+        "test_per_class_metrics.csv",
+        "test_confusion_matrix.csv",
+        "test_report.md",
+    ):
+        assert artifact_name in code
+    assert "predictions.csv" in code
+    assert "Accuracy/Recall" in code

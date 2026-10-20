@@ -39,10 +39,24 @@ def source_info(source: str, fallback_split: str) -> tuple[str, str | None, str]
 
 def label_names_from_split(split_file: Path) -> dict[int, str]:
     names = {}
+    ids_by_name = {}
     for source, label in read_split_file(split_file):
         _, label_name, _ = source_info(source, "train")
         if label_name is not None:
-            names.setdefault(label, label_name)
+            previous_name = names.get(label)
+            if previous_name is not None and previous_name != label_name:
+                raise ValueError(
+                    f"Conflicting label names for ID {label} in {split_file}: "
+                    f"{previous_name!r} vs {label_name!r}"
+                )
+            previous_id = ids_by_name.get(label_name)
+            if previous_id is not None and previous_id != label:
+                raise ValueError(
+                    f"Label name {label_name!r} maps to multiple IDs in {split_file}: "
+                    f"{previous_id} and {label}"
+                )
+            names[label] = label_name
+            ids_by_name[label_name] = label
     return dict(sorted(names.items()))
 
 
