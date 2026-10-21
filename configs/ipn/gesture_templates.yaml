@@ -1,13 +1,15 @@
 # Temporal template V2 cho IPN Hand 13 lớp (bỏ D0X).
+# Revision sau thử nghiệm A: ưu tiên conjunction trong cùng episode và bỏ negative
+# evidence toàn clip vì các predicate chuyển động trả tay xuất hiện ở hầu hết lớp.
 # Count/order chỉ được hiệu chỉnh trên train/validation; không sửa template theo test.
 version: 2
-description: IPN Hand temporal templates, label ids 0-12 from the locked manifest
+description: Conservative post-experiment-A templates for neural arbitration, label ids 0-12
 template_policy:
   matching:
     required_weight: 1.0
-    preferred_weight: 0.6
-    optional_weight: 0.3
-    negative_weight: -1.0
+    preferred_weight: 0.5
+    optional_weight: 0.25
+    negative_weight: -0.5
 gestures:
   B0A:
     description: Pointing with one finger - index finger extended, hand moves slowly like a cursor
@@ -17,16 +19,12 @@ gestures:
           required:
             - index_extended
         motions:
-          optional:
+          preferred:
             - hand_stationary
-    negative_evidence:
-      hand_shapes:
-        - index_middle_extended
-        - hand_open
-      motions:
-        - hand_fast_motion
+    negative_evidence: {}
     notes:
-      - Gan giong G01/G08; khac o cho khong co nhip ngon tro gap xuong.
+      - Evidence bao thu cho arbitration; stationary chi cong diem khi nam cung episode voi shape.
+      - Khong ma hoa "khong click" bang negative toan clip vi pha tra tay tao false penalty.
   B0B:
     description: Pointing with two fingers - index and middle fingers extended, hand moves slowly
     expected_events:
@@ -35,15 +33,12 @@ gestures:
           required:
             - index_middle_extended
         motions:
-          optional:
+          preferred:
             - hand_stationary
-    negative_evidence:
-      hand_shapes:
-        - hand_open
-      motions:
-        - hand_fast_motion
+    negative_evidence: {}
     notes:
-      - Gan giong G02/G09; khac o cho khong co nhip click.
+      - Evidence bao thu cho arbitration; stationary chi cong diem khi cung episode voi two-finger shape.
+      - Khong ma hoa "khong click" bang negative toan clip.
   G01:
     description: Click with one finger - index finger extended, taps down once
     expected_events:
@@ -58,13 +53,10 @@ gestures:
             - index_finger_moves_down
           preferred:
             - index_finger_moves_up
-    negative_evidence:
-      hand_shapes:
-        - index_middle_extended
-      motions:
-        - hand_fast_motion
+    negative_evidence: {}
     notes:
-      - Mot event click xuong; max_occurrences tach khoi G08.
+      - Mot episode co index shape va down motion dong thoi; max_occurrences tach khoi G08.
+      - Pha up chi la preferred vi co the bi cat boi phase segmentation.
   G02:
     description: Click with two fingers - index and middle fingers extended, tap down once
     expected_events:
@@ -80,11 +72,10 @@ gestures:
             - middle_finger_moves_down
           preferred:
             - index_finger_moves_up
-    negative_evidence:
-      motions:
-        - hand_fast_motion
+    negative_evidence: {}
     notes:
-      - Hai ngon phai cung co chuyen dong xuong trong active phase.
+      - Shape, index-down va middle-down phai cung nam trong mot episode.
+      - Max mot episode day du de tach khoi G09.
   G03:
     description: Throw up - hand moves quickly upward
     expected_events:
@@ -97,12 +88,9 @@ gestures:
         hand_shapes:
           optional:
             - hand_open
-    negative_evidence:
-      motions:
-        - hand_moves_left
-        - hand_moves_right
+    negative_evidence: {}
     notes:
-      - Clip co the co pha tay quay ve nen khong dat hand_moves_down la negative.
+      - Fast motion chi cong diem khi dong thoi voi direction; khong phat pha tra tay tren toan clip.
   G04:
     description: Throw down - hand moves quickly downward
     expected_events:
@@ -115,10 +103,9 @@ gestures:
         hand_shapes:
           optional:
             - hand_open
-    negative_evidence:
-      motions:
-        - hand_moves_left
-        - hand_moves_right
+    negative_evidence: {}
+    notes:
+      - Fast motion chi cong diem khi dong thoi voi direction; khong phat pha tra tay tren toan clip.
   G05:
     description: Throw left from the performer's perspective - motion goes right in image coordinates
     expected_events:
@@ -131,12 +118,10 @@ gestures:
         hand_shapes:
           optional:
             - hand_open
-    negative_evidence:
-      motions:
-        - hand_moves_up
-        - hand_moves_down
+    negative_evidence: {}
     notes:
       - Da doi chieu theo toa do anh sau khi xem clip train va validation: trai cua nguoi thuc hien la phai tren anh.
+      - Fast motion chi cong diem khi dong thoi voi direction trong active episode.
   G06:
     description: Throw right from the performer's perspective - motion goes left in image coordinates
     expected_events:
@@ -149,12 +134,10 @@ gestures:
         hand_shapes:
           optional:
             - hand_open
-    negative_evidence:
-      motions:
-        - hand_moves_up
-        - hand_moves_down
+    negative_evidence: {}
     notes:
       - Da doi chieu theo toa do anh sau khi xem clip train va validation: phai cua nguoi thuc hien la trai tren anh.
+      - Fast motion chi cong diem khi dong thoi voi direction trong active episode.
   G07:
     description: Open twice - hand goes from closed to open, repeated two times
     expected_events:
@@ -183,16 +166,16 @@ gestures:
         finger_motions:
           preferred:
             - fingers_spread_increasing
-    negative_evidence:
-      motions:
-        - hand_fast_motion
+    negative_evidence: {}
     notes:
       - Bon phase ordered closed-open-closed-open bieu dien hai chu ky.
+      - Spread trend cung episode la evidence uu tien de giam subsequence ngau nhien, khong phai hard gate.
   G08:
     description: Double click with one finger - index finger taps down twice
     expected_events:
       - subject: any
         min_occurrences: 2
+        max_occurrences: 2
         hand_shapes:
           required:
             - index_extended
@@ -202,18 +185,15 @@ gestures:
           preferred:
             - index_finger_oscillates
             - index_finger_moves_up
-    negative_evidence:
-      hand_shapes:
-        - index_middle_extended
-      motions:
-        - hand_fast_motion
+    negative_evidence: {}
     notes:
-      - Can it nhat hai event click xuong tach khoi G01.
+      - Can dung hai episode click xuong tach biet; max hai de giam false double-click do fragmentation.
   G09:
     description: Double click with two fingers - index and middle fingers tap down twice
     expected_events:
       - subject: any
         min_occurrences: 2
+        max_occurrences: 2
         hand_shapes:
           required:
             - index_middle_extended
@@ -224,11 +204,9 @@ gestures:
           preferred:
             - index_finger_oscillates
             - index_finger_moves_up
-    negative_evidence:
-      motions:
-        - hand_fast_motion
+    negative_evidence: {}
     notes:
-      - Can it nhat hai event click hai ngon tach khoi G02.
+      - Can dung hai episode day du shape/index-down/middle-down va tach biet.
   G10:
     description: Zoom in - fingers spread apart from a pinched pose
     expected_events:
@@ -241,11 +219,10 @@ gestures:
         hand_shapes:
           optional:
             - hand_open
-    negative_evidence:
-      finger_motions:
-        - pinch_distance_decreasing
+    negative_evidence: {}
     notes:
       - Da xac nhan tren clip train va validation: zoom in mo khoang cach ngon cai-ngon tro.
+      - Spread cung chieu chi cong diem khi nam trong active episode; khong phat chieu nguoc o pha tra tay.
   G11:
     description: Zoom out - fingers move together into a pinched pose
     expected_events:
@@ -258,8 +235,7 @@ gestures:
         hand_shapes:
           optional:
             - fingers_slightly_curled
-    negative_evidence:
-      finger_motions:
-        - pinch_distance_increasing
+    negative_evidence: {}
     notes:
       - Da xac nhan tren clip train va validation: zoom out thu khoang cach ngon cai-ngon tro.
+      - Spread cung chieu chi cong diem khi nam trong active episode; khong phat chieu nguoc o pha tra tay.

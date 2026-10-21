@@ -52,6 +52,27 @@ def instance_graph(concepts: list[str]) -> dict:
     return {"graph_type": "instance_graph", "nodes": nodes, "edges": edges}
 
 
+def add_event_fact(
+    graph: dict,
+    event_id: str,
+    node_type: str,
+    relation: str,
+    concept: str,
+) -> None:
+    concept_id = f"{node_type.lower()}:{event_id}:{concept}"
+    graph["nodes"].append(
+        {"id": concept_id, "type": node_type, "properties": {"name": concept}}
+    )
+    graph["edges"].append(
+        {
+            "source": event_id,
+            "relation": relation,
+            "target": concept_id,
+            "properties": {"confidence": 1.0},
+        }
+    )
+
+
 class SymbolicTemplateV2Tests(unittest.TestCase):
     def test_yaml_weights_are_applied_and_validated(self) -> None:
         yaml_text = """
@@ -162,7 +183,10 @@ gestures:
         two_clicks = instance_graph(["click", "click"])
         self.assertGreater(score_template(one_click, single)["score"], score_template(one_click, double)["score"])
         self.assertGreater(score_template(two_clicks, double)["score"], score_template(two_clicks, single)["score"])
-        self.assertEqual(score_template(two_clicks, single)["temporal_score"], 0.0)
+        # Excess evidence is a bounded penalty, so a single-click template still
+        # retains useful evidence while the truly separated double favors G08.
+        self.assertGreater(score_template(two_clicks, single)["temporal_score"], 0.0)
+        self.assertLess(score_template(two_clicks, single)["temporal_score"], 1.0)
 
         legacy_double = dict(double)
         legacy_double.pop("schema_version")
@@ -188,7 +212,7 @@ gestures:
         self.assertEqual(correct["temporal_score"], 1.0)
         self.assertGreater(correct["score"], wrong["score"])
 
-    def test_max_occurrence_violation_zeros_multi_event_template(self) -> None:
+    def test_max_occurrence_violation_uses_soft_penalty_multi_event_template(self) -> None:
         template = build_template_graph(
             "GXX",
             99,
@@ -202,8 +226,104 @@ gestures:
         )
         result = score_template(instance_graph(["click", "click", "open"]), template)
         self.assertTrue(result["event_matches"][0]["observed_occurrences"] > 1)
-        self.assertEqual(result["temporal_score"], 0.0)
+        self.assertTrue(result["event_matches"][0]["max_occurrence_penalty"] < 1.0)
+        self.assertGreater(result["temporal_score"], 0.0)
+        self.assertGreater(result["score"], 0.0)
+
+    def test_v2_required_concepts_split_across_events_are_not_conjunctive(self) -> None:
+        template = build_template_graph(
+            "GXX",
+            99,
+            {
+                "description": "",
+                "notes": [],
+                "expected_events": [
+                    {
+                        "subject": "any",
+                        "requirements": {
+                            "hand_shapes": {"required": ["open"]},
+                            "finger_motions": {"required": ["click", "swipe"]},
+                        },
+                    }
+                ],
+                "negative_evidence": {},
+            },
+            WEIGHTS,
+        )
+        graph = instance_graph(["click", "swipe"])
+        add_event_fact(graph, "event:1", "HandShape", "HAS_HAND_SHAPE", "open")
+        result = score_template(graph, template)
+        self.assertLess(result["required_hit"], result["required_total"])
+        self.assertEqual(result["missing_required_count"], 1)
+        self.assertLess(result["positive_score"], result["positive_total"])
         self.assertEqual(result["score"], 0.0)
+
+    def test_v2_required_concepts_split_across_hands_are_not_conjunctive(self) -> None:
+        template = build_template_graph(
+            "GXX",
+            99,
+            {
+                "description": "",
+                "notes": [],
+                "expected_events": [
+                    {
+                        "subject": "any",
+                        "requirements": {
+                            "hand_shapes": {"required": ["open"]},
+                            "finger_motions": {"required": ["click"]},
+                        },
+                    }
+                ],
+                "negative_evidence": {},
+            },
+            WEIGHTS,
+        )
+        graph = instance_graph(["unrelated", "click"])
+        next(node for node in graph["nodes"] if node["id"] == "event:2")["properties"]["subject"] = "left_hand"
+        add_event_fact(graph, "event:1", "HandShape", "HAS_HAND_SHAPE", "open")
+        result = score_template(graph, template)
+        self.assertEqual(result["required_hit"], 1)
+        self.assertEqual(result["missing_required_count"], 1)
+        self.assertEqual(result["score"], 0.0)
+
+    def test_overlapping_or_adjacent_fragments_count_once_for_click_occurrence(self) -> None:
+        double = build_template_graph(
+            "G08",
+            9,
+            {"description": "", "notes": [], "expected_events": [event_template("click", 2)], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        for start_frame in (12, 13):
+            graph = instance_graph(["click", "click"])
+            event = next(node for node in graph["nodes"] if node["id"] == "event:2")
+            event["properties"]["start_frame"] = start_frame
+            event["properties"]["end_frame"] = start_frame + 2
+            result = score_template(graph, double)
+            self.assertEqual(result["event_matches"][0]["observed_occurrences"], 1)
+            self.assertEqual(result["temporal_score"], 0.5)
+
+    def test_legacy_v1_adjacent_events_keep_event_id_occurrence_semantics(self) -> None:
+        legacy_double = build_template_graph(
+            "G08",
+            9,
+            {
+                "description": "",
+                "notes": [],
+                "expected_events": [event_template("click", 2)],
+                "negative_evidence": {},
+            },
+            WEIGHTS,
+            schema_version=1,
+        )
+        graph = instance_graph(["click", "click"])
+        second = next(node for node in graph["nodes"] if node["id"] == "event:2")
+        second["properties"]["start_frame"] = 13
+        second["properties"]["end_frame"] = 15
+
+        result = score_template(graph, legacy_double)
+
+        self.assertEqual(result["event_matches"][0]["observed_occurrences"], 2)
+        self.assertEqual(result["temporal_score"], 1.0)
 
     def test_phase_splits_of_one_atomic_event_count_once(self) -> None:
         double = build_template_graph(
@@ -249,6 +369,140 @@ gestures:
         result = score_template(build_instance_graph_phase_v2(events), double)
         self.assertEqual(result["event_matches"][0]["observed_occurrences"], 1)
         self.assertEqual(result["temporal_score"], 0.5)
+
+    def test_persistent_shape_does_not_merge_two_distinct_click_occurrences(self) -> None:
+        def click_template(minimum: int, maximum: int) -> dict:
+            return build_template_graph(
+                "GXX",
+                99,
+                {
+                    "description": "",
+                    "notes": [],
+                    "expected_events": [
+                        {
+                            "subject": "any",
+                            "min_occurrences": minimum,
+                            "max_occurrences": maximum,
+                            "requirements": {
+                                "hand_shapes": {"required": ["index_extended"]},
+                                "finger_motions": {
+                                    "required": ["index_finger_moves_down"]
+                                },
+                            },
+                        }
+                    ],
+                    "negative_evidence": {},
+                },
+                WEIGHTS,
+            )
+
+        events = build_events_phase_v2(
+            {
+                "video_id": "two-clicks-with-stable-shape",
+                "predicates": [
+                    {
+                        "name": "index_extended",
+                        "subject": "right_hand",
+                        "object": None,
+                        "start_frame": 0,
+                        "end_frame": 30,
+                        "confidence": 1.0,
+                        "evidence_keypoints": ["right_forefinger4"],
+                    },
+                    {
+                        "name": "index_finger_moves_down",
+                        "subject": "right_hand",
+                        "object": None,
+                        "start_frame": 5,
+                        "end_frame": 8,
+                        "confidence": 1.0,
+                        "evidence_keypoints": ["right_forefinger4"],
+                    },
+                    {
+                        "name": "index_finger_moves_down",
+                        "subject": "right_hand",
+                        "object": None,
+                        "start_frame": 20,
+                        "end_frame": 23,
+                        "confidence": 1.0,
+                        "evidence_keypoints": ["right_forefinger4"],
+                    },
+                ],
+            },
+            max_phase_duration=16,
+            min_phase_duration=1,
+        )
+        graph = build_instance_graph_phase_v2(events)
+        single_result = score_template(graph, click_template(1, 1))
+        double_result = score_template(graph, click_template(2, 2))
+
+        self.assertEqual(double_result["event_matches"][0]["observed_occurrences"], 2)
+        self.assertGreater(double_result["score"], single_result["score"])
+
+    def test_two_finger_clicks_use_motion_ids_instead_of_persistent_shape_id(self) -> None:
+        template = build_template_graph(
+            "G09",
+            10,
+            {
+                "description": "",
+                "notes": [],
+                "expected_events": [
+                    {
+                        "subject": "any",
+                        "min_occurrences": 2,
+                        "max_occurrences": 2,
+                        "requirements": {
+                            "hand_shapes": {"required": ["index_middle_extended"]},
+                            "finger_motions": {
+                                "required": [
+                                    "index_finger_moves_down",
+                                    "middle_finger_moves_down",
+                                ]
+                            },
+                        },
+                    }
+                ],
+                "negative_evidence": {},
+            },
+            WEIGHTS,
+        )
+        predicates = [
+            {
+                "name": "index_middle_extended",
+                "subject": "right_hand",
+                "object": None,
+                "start_frame": 0,
+                "end_frame": 30,
+                "confidence": 1.0,
+                "evidence_keypoints": ["right_forefinger4", "right_middle_finger4"],
+            }
+        ]
+        for start, end in ((5, 8), (20, 23)):
+            for concept, keypoint in (
+                ("index_finger_moves_down", "right_forefinger4"),
+                ("middle_finger_moves_down", "right_middle_finger4"),
+            ):
+                predicates.append(
+                    {
+                        "name": concept,
+                        "subject": "right_hand",
+                        "object": None,
+                        "start_frame": start,
+                        "end_frame": end,
+                        "confidence": 1.0,
+                        "evidence_keypoints": [keypoint],
+                    }
+                )
+
+        events = build_events_phase_v2(
+            {"video_id": "two-two-finger-clicks", "predicates": predicates},
+            max_phase_duration=16,
+            min_phase_duration=1,
+        )
+        result = score_template(build_instance_graph_phase_v2(events), template)
+
+        self.assertEqual(result["event_matches"][0]["observed_occurrences"], 2)
+        self.assertEqual(result["required_hit"], result["required_total"])
 
     def test_occurrences_from_different_hands_do_not_form_double_click(self) -> None:
         double = build_template_graph(

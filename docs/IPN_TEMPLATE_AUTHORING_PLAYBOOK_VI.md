@@ -1,16 +1,18 @@
 # Playbook viết và đánh giá template IPN 13 lớp
 
-Tài liệu này là quy trình làm việc cho giai đoạn symbolic sau khi ba thí nghiệm neural A/B/C hoàn tất. Mục tiêu là dùng template để sửa các lỗi có cấu trúc của neural, không thay thế neural bằng một bộ luật cứng và không điều chỉnh theo test set.
+Tài liệu này là quy trình làm việc cho giai đoạn symbolic song song với các thí nghiệm neural A/B/C. Mục tiêu là dùng template để sửa các lỗi có cấu trúc của neural, không thay thế neural bằng một bộ luật cứng và không điều chỉnh theo test set.
 
 ## 1. Điểm xuất phát và tiêu chí chốt neural
 
-Ba cấu hình đang chạy cùng seed 42:
+Ba cấu hình dùng cùng seed 42; A đã hoàn tất, B/C vẫn cần chạy trước khi chốt neural cuối cùng:
 
 | Tên | Pooling | Frame masking | Keypoint dropout | Câu hỏi cần trả lời |
 |---|---|---:|---:|---|
 | A_attention | Attention pooling | 0.05 | 0.03 | Attention có giúp chọn frame quan trọng không? |
 | B_masked_mean | Masked mean | 0.05 | 0.03 | Pooling đơn giản có ổn định hơn không? |
 | C_masked_mean_light_dropout | Masked mean | 0.00 | 0.02 | Giảm augmentation có giữ được tín hiệu động tác nhỏ không? |
+
+Kết quả validation đã chốt của `A_attention`: accuracy **0.8761**, Macro-F1 **0.8157**, best epoch 34. Lớp yếu nhất là G01 (F1 0.531), tiếp theo là G08 (0.645), G09 (0.667) và G02 (0.691). Các nhầm lẫn có cấu trúc chính là G01→G08: 11, G08→G01: 6; G02→G09: 7, G09→G02: 5; G10→G11: 4, G11→G10: 1. Đây là cơ sở validation cho revision template sau A; không dùng kết quả test để viết luật.
 
 Chỉ dùng validation để chọn cấu hình. Thứ tự xếp hạng là:
 
@@ -59,23 +61,23 @@ Template không nên can thiệp mọi lớp. Phạm vi đầu tiên chỉ gồm
 
 | Lớp | Dấu hiệu chính hiện có | Nhầm cần xử lý | Rủi ro hiện tại |
 |---|---|---|---|
-| B0A | `index_extended`, chậm/đứng yên | G01, G08, B0B | Chưa mã hóa rõ “không có click” |
-| B0B | `index_middle_extended`, chậm/đứng yên | G02, G09, B0A | Chưa mã hóa rõ “không có click” |
-| G01 | Một event index đi xuống, max 1 | G08, B0A | Pha đi lên mới là preferred; max occurrence là phạt mềm |
-| G02 | Index và middle cùng đi xuống, max 1 | G09, B0B | Shape và motion có thể bị tách thành hai phase |
-| G03 | Tay đi lên, ưu tiên nhanh | G04, G05, G06 | Chuyển động chéo có thể sinh nhiều predicate hướng |
-| G04 | Tay đi xuống, ưu tiên nhanh | G03, G05, G06 | Chưa có kiểm tra hướng trội/net trajectory |
-| G05 | Image-right, tức trái của người diễn | G06 và hướng chéo | Phụ thuộc quy ước camera/mirroring |
-| G06 | Image-left, tức phải của người diễn | G05 và hướng chéo | Phụ thuộc quy ước camera/mirroring |
-| G07 | 4 phase closed–open–closed–open | G10, G11 | Matcher có thể nhận một subsequence ngẫu nhiên |
-| G08 | Ít nhất 2 event index click | G01, B0A | Hai click gần nhau có thể bị merge thành một event |
-| G09 | Ít nhất 2 event two-finger click | G02, B0B | Phụ thuộc tracking ngón giữa và tách event |
-| G10 | Pinch distance tăng | G11, G07 | Chưa yêu cầu rõ trạng thái đầu pinch và cuối mở |
-| G11 | Pinch distance giảm | G10, G07 | Nhiễu có thể tạo cả chiều tăng và giảm |
+| B0A | `index_extended`, ưu tiên đứng yên trong cùng episode | G01, G08, B0B | Chưa mã hóa rõ “không có click” |
+| B0B | `index_middle_extended`, ưu tiên đứng yên trong cùng episode | G02, G09, B0A | Chưa mã hóa rõ “không có click” |
+| G01 | Một episode index đi xuống, max 1 | G08, B0A | Pha đi lên mới là preferred; max occurrence là phạt mềm |
+| G02 | Index và middle cùng đi xuống trong một episode, max 1 | G09, B0B | Shape và motion có thể bị tách thành hai phase |
+| G03 | Tay đi lên, ưu tiên nhanh trong cùng episode | G04, G05, G06 | Chuyển động chéo có thể sinh nhiều predicate hướng |
+| G04 | Tay đi xuống, ưu tiên nhanh trong cùng episode | G03, G05, G06 | Chưa có kiểm tra hướng trội/net trajectory |
+| G05 | Image-right, ưu tiên nhanh, tức trái của người diễn | G06 và hướng chéo | Phụ thuộc quy ước camera/mirroring |
+| G06 | Image-left, ưu tiên nhanh, tức phải của người diễn | G05 và hướng chéo | Phụ thuộc quy ước camera/mirroring |
+| G07 | 4 phase closed–open–closed–open, ưu tiên spread trend | G10, G11 | Matcher có thể nhận một subsequence ngẫu nhiên |
+| G08 | Đúng 2 episode index click | G01, B0A | Hai click gần nhau có thể bị merge thành một event |
+| G09 | Đúng 2 episode two-finger click | G02, B0B | Phụ thuộc tracking ngón giữa và tách event |
+| G10 | Pinch distance tăng, ưu tiên finger spread cùng tăng | G11, G07 | Chưa yêu cầu rõ trạng thái đầu pinch và cuối mở |
+| G11 | Pinch distance giảm, ưu tiên finger spread cùng giảm | G10, G07 | Nhiễu có thể tạo cả chiều tăng và giảm |
 
 Các giới hạn của matcher phải nhớ khi viết template:
 
-- Negative evidence hiện được kiểm tra trên toàn clip, không chỉ active interval. Một chuyển động trả tay có thể gây phạt sai.
+- Negative evidence vẫn được matcher kiểm tra trên toàn clip, không chỉ active interval. Vì vậy revision sau thí nghiệm A để trống `negative_evidence`; chỉ bật lại khi matcher giới hạn được negative vào matched interval.
 - Occurrence dựa trên merge và dedup event; hai click sát nhau có thể bị gộp.
 - Shape là tín hiệu theo frame, motion cần một cửa sổ dài hơn; hai dấu hiệu đúng có thể nằm ở hai phase kề nhau.
 - Sequence matching hiện mang tính greedy và chưa tối ưu trực tiếp toàn bộ ràng buộc `BEFORE`.
