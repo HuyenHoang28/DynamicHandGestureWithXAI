@@ -13,7 +13,11 @@ sys.path.insert(0, str(NEURAL_ONLY_DIR))
 
 from dataset import cache_path_for_source, label_names_from_split  # noqa: E402
 from models import NeuralOnlyClassifier  # noqa: E402
-from test_neural_only import classification_metrics, validate_evaluation_label_contract  # noqa: E402
+from test_neural_only import (  # noqa: E402
+    classification_metrics,
+    parse_args,
+    validate_evaluation_label_contract,
+)
 from train_neural_only import (  # noqa: E402
     augment_keypoints,
     class_weights,
@@ -260,6 +264,26 @@ def test_evaluation_rejects_labels_outside_checkpoint_output_range() -> None:
             checkpoint_label_names={0: "B0A"},
             evaluation_label_names={13: "OLD_13"},
         )
+
+
+def test_evaluation_parser_supports_validation_split(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "test_neural_only.py",
+            "--checkpoint",
+            "best.pt",
+            "--cache-root",
+            "cache",
+            "--split",
+            "val",
+            "--test-file",
+            "val.txt",
+        ],
+    )
+    args = parse_args()
+    assert args.split == "val"
 
 
 def test_evaluation_rejects_same_id_with_different_label_semantics() -> None:

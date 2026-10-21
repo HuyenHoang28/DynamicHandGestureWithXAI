@@ -121,7 +121,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     model_args = argparse.Namespace(**checkpoint["args"])
     label_names = {int(k): v for k, v in checkpoint.get("label_names", {}).items()}
-    test_set = NeuralOnlyKeypointDataset(args.test_file, args.cache_root, "test", model_args.num_frames)
+    test_set = NeuralOnlyKeypointDataset(args.test_file, args.cache_root, args.split, model_args.num_frames)
     evaluation_label_names = label_names_from_split(args.test_file)
     validate_evaluation_label_contract(
         test_set.samples,
@@ -242,6 +242,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--cache-root", type=Path, required=True)
     parser.add_argument("--test-file", type=Path, default=Path("test.txt"))
+    parser.add_argument("--split", choices=["train", "val", "test"], default="test")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda:0")
