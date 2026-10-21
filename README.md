@@ -4,7 +4,7 @@ Repo này chứa bản code gọn để người khác clone về chạy lại p
 
 Data cache và checkpoint không được commit trực tiếp vào GitHub để repo nhẹ, dễ clone, và tránh giới hạn dung lượng. Sau khi clone, người dùng cần tải/copy data vào đúng đường dẫn như phần bên dưới.
 
-Để hiểu pipeline IPN 13 lớp hiện tại từ dữ liệu, neural, pooling và augmentation đến symbolic/fusion, đọc [Handbook toàn diện IPN neuro-symbolic](docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md).
+Để hiểu pipeline IPN 13 lớp hiện tại từ dữ liệu, neural, pooling và augmentation đến symbolic/fusion, đọc [Handbook toàn diện IPN neuro-symbolic](docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md). Quy trình viết, kiểm chứng và tích hợp template nằm trong [Playbook template IPN 13 lớp](docs/IPN_TEMPLATE_AUTHORING_PLAYBOOK_VI.md).
 
 ## Nội dung repo
 
