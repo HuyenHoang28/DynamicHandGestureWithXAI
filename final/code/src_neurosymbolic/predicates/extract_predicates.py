@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
@@ -21,6 +22,15 @@ IPN_PINCH_THRESHOLD = 0.08
 DEFAULT_HAND_MOTION_THRESHOLD = IPN_HAND_MOTION_THRESHOLD
 DEFAULT_FINGER_MOTION_THRESHOLD = IPN_FINGER_MOTION_THRESHOLD
 DEFAULT_PINCH_THRESHOLD = IPN_PINCH_THRESHOLD
+# A value of zero preserves the pre-trend-consistency behaviour for direct
+# Python callers.  The phase-v2 precompute entry point opts into the more
+# conservative IPN preset below unless a caller supplies its own value.
+DEFAULT_TREND_CONSISTENCY = 0.0
+IPN_TREND_CONSISTENCY = 0.6
+# Explicit aliases make the range-constrained knob discoverable to callers
+# that use ``*_threshold`` terminology for the other motion settings.
+DEFAULT_TREND_CONSISTENCY_THRESHOLD = DEFAULT_TREND_CONSISTENCY
+IPN_TREND_CONSISTENCY_THRESHOLD = IPN_TREND_CONSISTENCY
 FINGERS = {
     "thumb": ["thumb1", "thumb2", "thumb3", "thumb4"],
     "forefinger": ["forefinger1", "forefinger2", "forefinger3", "forefinger4"],
@@ -387,6 +397,82 @@ def direction_changes(series: list[float], min_abs_delta: float) -> int:
     return sum(1 for a, b in zip(signs, signs[1:]) if a != b)
 
 
+def validate_trend_consistency(value: float | None, default: float = DEFAULT_TREND_CONSISTENCY) -> float:
+    """Validate and resolve the directional-trend consistency threshold.
+
+    The threshold is the minimum ratio of signed net movement to total
+    variation in a candidate window.  ``0`` disables the additional gate,
+    preserving the legacy endpoint-only behaviour.  Values in ``[0, 1]`` are
+    valid; rejecting non-finite values here keeps CLI and Python callers
+    consistent.
+    """
+
+    resolved = default if value is None else value
+    try:
+        resolved_float = float(resolved)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("trend_consistency must be a finite value in [0, 1]") from exc
+    if not math.isfinite(resolved_float) or not 0.0 <= resolved_float <= 1.0:
+        raise ValueError("trend_consistency must be a finite value in [0, 1]")
+    return resolved_float
+
+
+def trend_consistency_ratio(values: list[float], direction: int = 1) -> float:
+    """Return directional signed movement divided by total variation.
+
+    ``direction`` is ``1`` for an increasing trend and ``-1`` for a
+    decreasing trend.  A monotonic window scores ``1``; a window that reaches
+    the same endpoint after substantial reversal scores lower.  A flat or
+    empty window scores ``0`` because it provides no directional evidence.
+    """
+
+    if direction not in (-1, 1):
+        raise ValueError("direction must be 1 or -1")
+    if len(values) < 2:
+        return 0.0
+    steps = [float(values[index + 1]) - float(values[index]) for index in range(len(values) - 1)]
+    total_variation = sum(abs(step) for step in steps)
+    if total_variation <= 1e-12:
+        return 0.0
+    signed_movement = direction * sum(steps)
+    # A candidate's endpoint displacement already establishes its direction;
+    # clamping makes this helper safe and interpretable when used directly.
+    ratio = max(0.0, min(1.0, signed_movement / total_variation))
+    return 1.0 if ratio >= 1.0 - 1e-12 else ratio
+
+
+def _window_scalar_trend_consistent(
+    values: list[float | None],
+    start: int,
+    end: int,
+    direction: int,
+    threshold: float,
+) -> bool:
+    if threshold <= 0.0:
+        return True
+    window = values[start : end + 1]
+    if any(value is None for value in window):
+        return False
+    return trend_consistency_ratio([float(value) for value in window], direction) + 1e-12 >= threshold
+
+
+def _window_point_axis_trend_consistent(
+    values: list[Point | None],
+    start: int,
+    end: int,
+    axis: str,
+    direction: int,
+    threshold: float,
+) -> bool:
+    if threshold <= 0.0:
+        return True
+    window = values[start : end + 1]
+    if any(value is None for value in window):
+        return False
+    coordinates = [float(getattr(value, axis)) for value in window]
+    return trend_consistency_ratio(coordinates, direction) + 1e-12 >= threshold
+
+
 def add_window_predicate(predicates: list[dict], name: str, subject: str, start_frame: int, end_frame: int, confidence_value: float, evidence: list[str]) -> None:
     predicates.append(
         {
@@ -407,9 +493,11 @@ def extract_motion(
     window_size: int,
     motion_threshold: float,
     hand_motion_threshold: float | None = None,
+    trend_consistency: float | None = DEFAULT_TREND_CONSISTENCY,
 ) -> tuple[list[dict], dict[tuple[str, int], bool], dict[tuple[str, int], bool]]:
     if hand_motion_threshold is not None:
         motion_threshold = hand_motion_threshold
+    trend_consistency = validate_trend_consistency(trend_consistency)
     predicates = []
     hand_moving = {}
     hand_fast = {}
@@ -434,19 +522,37 @@ def extract_motion(
             ev = [f"{side}_hand_root", f"{side}_wrist"]
             conf = confidence(centers[start], centers[end])
             moving = False
-            if dy < -motion_threshold:
+            if dy < -motion_threshold and _window_point_axis_trend_consistent(
+                centers, start, end, "y", -1, trend_consistency
+            ):
                 add_window_predicate(predicates, "hand_moves_up", subject, start_frame, end_frame, conf, ev)
                 moving = True
-            if dy > motion_threshold:
+            if dy > motion_threshold and _window_point_axis_trend_consistent(
+                centers, start, end, "y", 1, trend_consistency
+            ):
                 add_window_predicate(predicates, "hand_moves_down", subject, start_frame, end_frame, conf, ev)
                 moving = True
-            if dx < -motion_threshold:
+            if dx < -motion_threshold and _window_point_axis_trend_consistent(
+                centers, start, end, "x", -1, trend_consistency
+            ):
                 add_window_predicate(predicates, "hand_moves_left", subject, start_frame, end_frame, conf, ev)
                 moving = True
-            if dx > motion_threshold:
+            if dx > motion_threshold and _window_point_axis_trend_consistent(
+                centers, start, end, "x", 1, trend_consistency
+            ):
                 add_window_predicate(predicates, "hand_moves_right", subject, start_frame, end_frame, conf, ev)
                 moving = True
-            if abs(dx) > motion_threshold and abs(dy) > motion_threshold:
+            diagonal_trend = (
+                abs(dx) > motion_threshold
+                and abs(dy) > motion_threshold
+                and _window_point_axis_trend_consistent(
+                    centers, start, end, "x", -1 if dx < 0 else 1, trend_consistency
+                )
+                and _window_point_axis_trend_consistent(
+                    centers, start, end, "y", -1 if dy < 0 else 1, trend_consistency
+                )
+            )
+            if diagonal_trend:
                 vertical = "up" if dy < 0 else "down"
                 horizontal = "left" if dx < 0 else "right"
                 add_window_predicate(predicates, f"hand_moves_diagonal_{vertical}_{horizontal}", subject, start_frame, end_frame, conf, ev)
@@ -540,6 +646,7 @@ def extract_finger_motion(
     hand_fast: dict[tuple[str, int], bool],
     finger_motion_threshold: float | None = None,
     pinch_threshold: float | None = None,
+    trend_consistency: float | None = DEFAULT_TREND_CONSISTENCY,
 ) -> list[dict]:
     """Extract motion in hand-relative coordinates.
 
@@ -554,6 +661,7 @@ def extract_finger_motion(
         finger_motion_threshold = motion_threshold
     if pinch_threshold is None:
         pinch_threshold = finger_motion_threshold
+    trend_consistency = validate_trend_consistency(trend_consistency)
     # Keep the legacy parameters in the signature without allowing global
     # motion flags to hide otherwise observable relative finger motion.
     _ = hand_moving, hand_fast
@@ -580,15 +688,33 @@ def extract_finger_motion(
             if idx_dx is not None and idx_dy is not None and window_visible(index_rel, start, end):
                 conf = confidence(index_rel[start], index_rel[end])
                 ev = [f"{side}_hand_root", f"{side}_forefinger4"]
-                if idx_dy < -finger_motion_threshold:
+                if idx_dy < -finger_motion_threshold and _window_point_axis_trend_consistent(
+                    index_rel, start, end, "y", -1, trend_consistency
+                ):
                     add_window_predicate(predicates, "index_finger_moves_up", subject, start_frame, end_frame, conf, ev)
-                if idx_dy > finger_motion_threshold:
+                if idx_dy > finger_motion_threshold and _window_point_axis_trend_consistent(
+                    index_rel, start, end, "y", 1, trend_consistency
+                ):
                     add_window_predicate(predicates, "index_finger_moves_down", subject, start_frame, end_frame, conf, ev)
-                if idx_dx < -finger_motion_threshold:
+                if idx_dx < -finger_motion_threshold and _window_point_axis_trend_consistent(
+                    index_rel, start, end, "x", -1, trend_consistency
+                ):
                     add_window_predicate(predicates, "index_finger_moves_left", subject, start_frame, end_frame, conf, ev)
-                if idx_dx > finger_motion_threshold:
+                if idx_dx > finger_motion_threshold and _window_point_axis_trend_consistent(
+                    index_rel, start, end, "x", 1, trend_consistency
+                ):
                     add_window_predicate(predicates, "index_finger_moves_right", subject, start_frame, end_frame, conf, ev)
-                if abs(idx_dx) > finger_motion_threshold and abs(idx_dy) > finger_motion_threshold:
+                diagonal_trend = (
+                    abs(idx_dx) > finger_motion_threshold
+                    and abs(idx_dy) > finger_motion_threshold
+                    and _window_point_axis_trend_consistent(
+                        index_rel, start, end, "x", -1 if idx_dx < 0 else 1, trend_consistency
+                    )
+                    and _window_point_axis_trend_consistent(
+                        index_rel, start, end, "y", -1 if idx_dy < 0 else 1, trend_consistency
+                    )
+                )
+                if diagonal_trend:
                     vertical = "up" if idx_dy < 0 else "down"
                     horizontal = "left" if idx_dx < 0 else "right"
                     add_window_predicate(predicates, f"index_finger_moves_diagonal_{vertical}_{horizontal}", subject, start_frame, end_frame, conf, ev)
@@ -607,18 +733,26 @@ def extract_finger_motion(
             if middle_dy is not None and window_visible(middle_rel, start, end):
                 conf = confidence(middle_rel[start], middle_rel[end])
                 ev = [f"{side}_hand_root", f"{side}_middle_finger4"]
-                if middle_dy < -finger_motion_threshold:
+                if middle_dy < -finger_motion_threshold and _window_point_axis_trend_consistent(
+                    middle_rel, start, end, "y", -1, trend_consistency
+                ):
                     add_window_predicate(predicates, "middle_finger_moves_up", subject, start_frame, end_frame, conf, ev)
-                if middle_dy > finger_motion_threshold:
+                if middle_dy > finger_motion_threshold and _window_point_axis_trend_consistent(
+                    middle_rel, start, end, "y", 1, trend_consistency
+                ):
                     add_window_predicate(predicates, "middle_finger_moves_down", subject, start_frame, end_frame, conf, ev)
 
             th_dy = delta(thumb_rel, start, end, "y")
             if th_dy is not None and window_visible(thumb_rel, start, end):
                 conf = confidence(thumb_rel[start], thumb_rel[end])
                 ev = [f"{side}_hand_root", f"{side}_thumb4"]
-                if th_dy < -finger_motion_threshold:
+                if th_dy < -finger_motion_threshold and _window_point_axis_trend_consistent(
+                    thumb_rel, start, end, "y", -1, trend_consistency
+                ):
                     add_window_predicate(predicates, "thumb_moves_up", subject, start_frame, end_frame, conf, ev)
-                if th_dy > finger_motion_threshold:
+                if th_dy > finger_motion_threshold and _window_point_axis_trend_consistent(
+                    thumb_rel, start, end, "y", 1, trend_consistency
+                ):
                     add_window_predicate(predicates, "thumb_moves_down", subject, start_frame, end_frame, conf, ev)
 
             start_pinch = pinch_distances[start]
@@ -631,9 +765,14 @@ def extract_finger_motion(
                 pinch_delta = end_pinch[0] - start_pinch[0]
                 conf = (start_pinch[1] + end_pinch[1]) / 2.0
                 ev = sorted(set(start_pinch[2] + end_pinch[2]))
-                if pinch_delta > pinch_threshold:
+                pinch_values = [value[0] for value in pinch_distances[start : end + 1]]
+                if pinch_delta > pinch_threshold and _window_scalar_trend_consistent(
+                    pinch_values, 0, len(pinch_values) - 1, 1, trend_consistency
+                ):
                     add_window_predicate(predicates, "pinch_distance_increasing", subject, start_frame, end_frame, conf, ev)
-                if pinch_delta < -pinch_threshold:
+                if pinch_delta < -pinch_threshold and _window_scalar_trend_consistent(
+                    pinch_values, 0, len(pinch_values) - 1, -1, trend_consistency
+                ):
                     add_window_predicate(predicates, "pinch_distance_decreasing", subject, start_frame, end_frame, conf, ev)
 
         spreads = [fingertip_spread(frame, side, min_score) if frame.get("valid", False) else None for frame in frames]
@@ -652,9 +791,14 @@ def extract_finger_motion(
             start_frame = int(frames[start].get("frame_id", start))
             end_frame = int(frames[end].get("frame_id", end))
             ev = [f"{side}_{tip}" for tip in FINGER_TIPS]
-            if delta_spread > finger_motion_threshold:
+            spread_values = [value[0] for value in spreads[start : end + 1]]
+            if delta_spread > finger_motion_threshold and _window_scalar_trend_consistent(
+                spread_values, 0, len(spread_values) - 1, 1, trend_consistency
+            ):
                 add_window_predicate(predicates, "fingers_spread_increasing", subject, start_frame, end_frame, conf, ev)
-            if delta_spread < -finger_motion_threshold:
+            if delta_spread < -finger_motion_threshold and _window_scalar_trend_consistent(
+                spread_values, 0, len(spread_values) - 1, -1, trend_consistency
+            ):
                 add_window_predicate(predicates, "fingers_spread_decreasing", subject, start_frame, end_frame, conf, ev)
 
     return predicates
@@ -674,9 +818,11 @@ def extract_coordination(
     window_size: int,
     motion_threshold: float,
     hand_motion_threshold: float | None = None,
+    trend_consistency: float | None = DEFAULT_TREND_CONSISTENCY,
 ) -> list[dict]:
     if hand_motion_threshold is not None:
         motion_threshold = hand_motion_threshold
+    trend_consistency = validate_trend_consistency(trend_consistency)
     predicates = []
     if len(frames) <= window_size:
         return predicates
@@ -703,6 +849,14 @@ def extract_coordination(
 
         left_sign = signed_direction(left_dx, motion_threshold)
         right_sign = signed_direction(right_dx, motion_threshold)
+        if left_sign and not _window_point_axis_trend_consistent(
+            left_centers, start, end, "x", left_sign, trend_consistency
+        ):
+            left_sign = 0
+        if right_sign and not _window_point_axis_trend_consistent(
+            right_centers, start, end, "x", right_sign, trend_consistency
+        ):
+            right_sign = 0
         if left_sign != 0 and right_sign != 0:
             name = (
                 "hands_move_same_direction_horizontal"
@@ -717,6 +871,14 @@ def extract_coordination(
 
         left_vsign = signed_direction(left_dy, motion_threshold)
         right_vsign = signed_direction(right_dy, motion_threshold)
+        if left_vsign and not _window_point_axis_trend_consistent(
+            left_centers, start, end, "y", left_vsign, trend_consistency
+        ):
+            left_vsign = 0
+        if right_vsign and not _window_point_axis_trend_consistent(
+            right_centers, start, end, "y", right_vsign, trend_consistency
+        ):
+            right_vsign = 0
         if left_vsign != 0 and left_vsign == right_vsign:
             add_window_predicate(predicates, "hands_move_same_direction_vertical", "both_hands", start_frame, end_frame, conf, evidence)
         if left_vsign != 0 and right_vsign != 0 and left_vsign == -right_vsign:
@@ -805,10 +967,17 @@ def build_predicate_config(
     hand_motion_threshold: float | None = None,
     finger_motion_threshold: float | None = None,
     pinch_threshold: float | None = None,
+    trend_consistency: float | None = DEFAULT_TREND_CONSISTENCY,
+    trend_consistency_threshold: float | None = None,
 ) -> dict:
     resolved_hand_threshold = motion_threshold if hand_motion_threshold is None else hand_motion_threshold
     resolved_finger_threshold = motion_threshold if finger_motion_threshold is None else finger_motion_threshold
     resolved_pinch_threshold = resolved_finger_threshold if pinch_threshold is None else pinch_threshold
+    if trend_consistency_threshold is not None:
+        if trend_consistency is not None and trend_consistency != DEFAULT_TREND_CONSISTENCY and float(trend_consistency) != float(trend_consistency_threshold):
+            raise ValueError("specify only one of trend_consistency and trend_consistency_threshold")
+        trend_consistency = trend_consistency_threshold
+    resolved_trend_consistency = validate_trend_consistency(trend_consistency)
     return {
         "version": "ipn_predicate_v2",
         "min_score": float(min_score),
@@ -819,6 +988,9 @@ def build_predicate_config(
             "finger_motion_threshold": float(resolved_finger_threshold),
             "pinch_threshold": float(resolved_pinch_threshold),
         },
+        "trend_consistency": resolved_trend_consistency,
+        "trend_consistency_threshold": resolved_trend_consistency,
+        "trend_consistency_formula": "signed_net_movement_over_total_variation",
         "finger_coordinates": "tip_minus_hand_root",
         "pinch_distance": "thumb4_forefinger4_distance_divided_by_median_local_palm_scale",
         "visibility": "keypoint_score_must_meet_min_score",
@@ -833,21 +1005,27 @@ def extract_predicates(
     hand_motion_threshold: float | None = None,
     finger_motion_threshold: float | None = None,
     pinch_threshold: float | None = None,
+    trend_consistency: float | None = DEFAULT_TREND_CONSISTENCY,
+    trend_consistency_threshold: float | None = None,
 ) -> dict:
     """Extract predicates while retaining the legacy ``motion_threshold`` API.
 
     When the new thresholds are omitted, all motion families use the legacy
     value.  This keeps existing Python callers deterministic; IPN precompute
-    supplies its tuned values explicitly.
+    supplies its tuned values explicitly.  ``trend_consistency`` is a
+    ``[0, 1]`` minimum ratio of signed per-step movement to total variation;
+    its default of ``0`` disables the extra gate for legacy callers.
     """
 
     predicate_config = build_predicate_config(
-        min_score,
-        window_size,
-        motion_threshold,
-        hand_motion_threshold,
-        finger_motion_threshold,
-        pinch_threshold,
+        min_score=min_score,
+        window_size=window_size,
+        motion_threshold=motion_threshold,
+        hand_motion_threshold=hand_motion_threshold,
+        finger_motion_threshold=finger_motion_threshold,
+        pinch_threshold=pinch_threshold,
+        trend_consistency=trend_consistency,
+        trend_consistency_threshold=trend_consistency_threshold,
     )
     thresholds = predicate_config["thresholds"]
     resolved_hand_threshold = thresholds["hand_motion_threshold"]
@@ -860,6 +1038,7 @@ def extract_predicates(
         min_score,
         window_size,
         resolved_hand_threshold,
+        trend_consistency=predicate_config["trend_consistency"],
     )
     finger_motion = extract_finger_motion(
         frames,
@@ -870,12 +1049,14 @@ def extract_predicates(
         hand_fast,
         finger_motion_threshold=resolved_finger_threshold,
         pinch_threshold=resolved_pinch_threshold,
+        trend_consistency=predicate_config["trend_consistency"],
     )
     coordination = extract_coordination(
         frames,
         min_score,
         window_size,
         resolved_hand_threshold,
+        trend_consistency=predicate_config["trend_consistency"],
     )
     sweep = extract_sweep(frames, min_score)
     predicates = merge_adjacent(spatial + motion + finger_motion + coordination + sweep)
@@ -903,6 +1084,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hand-motion-threshold", type=float, default=None)
     parser.add_argument("--finger-motion-threshold", type=float, default=None)
     parser.add_argument("--pinch-threshold", "--pinch-motion-threshold", dest="pinch_threshold", type=float, default=None)
+    parser.add_argument(
+        "--trend-consistency",
+        "--trend-consistency-threshold",
+        dest="trend_consistency",
+        type=float,
+        default=DEFAULT_TREND_CONSISTENCY,
+        help="Minimum signed movement / total variation ratio in [0, 1]; 0 preserves endpoint-only trends.",
+    )
     parser.add_argument("--pretty", action="store_true")
     return parser.parse_args()
 
@@ -918,6 +1107,7 @@ def main() -> None:
         hand_motion_threshold=args.hand_motion_threshold,
         finger_motion_threshold=args.finger_motion_threshold,
         pinch_threshold=args.pinch_threshold,
+        trend_consistency=args.trend_consistency,
     )
     write_json(out, args.output, args.pretty)
     print(f"Saved predicates: {args.output}")

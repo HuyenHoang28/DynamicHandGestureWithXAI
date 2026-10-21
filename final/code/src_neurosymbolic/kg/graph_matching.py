@@ -1,5 +1,6 @@
 import argparse
 import json
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -489,6 +490,101 @@ def template_event_episodes(instance_events: list[dict], template_event: dict) -
     )
 
 
+def ordered_sequence_match(
+    instance_events: list[dict],
+    template_events: list[dict],
+) -> tuple[int, str | None, list[dict]]:
+    """Match an ordered template without reusing or overlapping evidence.
+
+    The previous V2 sequence scan only advanced an index in the phase-event
+    list.  Adjacent phase nodes can overlap and can carry the same atomic
+    predicate IDs, so one physical action could satisfy multiple template
+    steps.  For temporal gestures (notably G07), require strictly non-overlap
+    and disjoint occurrence-defining atomic evidence on one subject.
+
+    Candidates are considered by earliest end frame, with bounded-depth
+    backtracking across template phases. Backtracking matters when the earliest
+    interval shares atomic evidence needed by a later step but another valid
+    interval does not.
+    """
+
+    candidate_subjects = sorted({event["subject"] for event in instance_events})
+    best_matches: list[dict] = []
+    best_subject = None
+    for subject in candidate_subjects:
+        candidate_pools = []
+        for template_event in template_events:
+            candidates = [
+                event
+                for event in template_event_episodes(instance_events, template_event)
+                if event["subject"] == subject
+                and event_satisfies_template(event, template_event)
+            ]
+            candidates.sort(
+                key=lambda item: (
+                    int(item["end_frame"]),
+                    int(item["start_frame"]),
+                    str(item["event_id"]),
+                )
+            )
+            candidate_pools.append(
+                [
+                    (candidate, frozenset(_record_occurrence_ids(candidate, template_event)))
+                    for candidate in candidates
+                ]
+            )
+
+        @lru_cache(maxsize=None)
+        def search(
+            template_index: int,
+            previous_end: int,
+            used_occurrence_ids: frozenset[str],
+        ) -> tuple[int, ...]:
+            if template_index >= len(template_events):
+                return ()
+            best: tuple[int, ...] = ()
+            remaining = len(template_events) - template_index
+            for candidate_index, (candidate, occurrence_ids) in enumerate(
+                candidate_pools[template_index]
+            ):
+                if int(candidate["start_frame"]) <= previous_end:
+                    continue
+                if occurrence_ids and occurrence_ids & used_occurrence_ids:
+                    continue
+                tail = search(
+                    template_index + 1,
+                    int(candidate["end_frame"]),
+                    used_occurrence_ids | occurrence_ids,
+                )
+                current = (candidate_index,) + tail
+                if len(current) > len(best):
+                    best = current
+                if len(best) == remaining:
+                    break
+            return best
+
+        selected_indices = search(0, -1, frozenset())
+        subject_matches = []
+        for template_index, candidate_index in enumerate(selected_indices):
+            template_event = template_events[template_index]
+            selected, selected_ids = candidate_pools[template_index][candidate_index]
+            subject_matches.append(
+                {
+                    "template_event": template_event["event_id"],
+                    "instance_events": list(
+                        selected.get("event_ids", [selected["event_id"]])
+                    ),
+                    "start_frame": int(selected["start_frame"]),
+                    "end_frame": int(selected["end_frame"]),
+                    "occurrence_ids": sorted(selected_ids),
+                }
+            )
+        if len(subject_matches) > len(best_matches):
+            best_matches = subject_matches
+            best_subject = subject
+    return len(best_matches), best_subject, best_matches
+
+
 def _record_requirement_strength(instance_event: dict, requirement: dict) -> float:
     matching_facts = _record_matching_facts(instance_event, requirement)
     if not matching_facts:
@@ -631,26 +727,13 @@ def temporal_template_score(instance_graph: dict, template_graph: dict) -> dict:
         )
 
     sequence_ratio = 1.0
+    sequence_subject = None
+    sequence_matches = []
     if len(template_events) > 1:
-        best_matched = 0
-        candidate_subjects = sorted({event["subject"] for event in instance_events}) or [""]
-        for candidate_subject in candidate_subjects:
-            cursor = -1
-            matched = 0
-            for template_event in template_events:
-                found = None
-                for index in range(cursor + 1, len(instance_events)):
-                    event = instance_events[index]
-                    if event["subject"] != candidate_subject:
-                        continue
-                    if event_satisfies_template(event, template_event):
-                        found = index
-                        break
-                if found is None:
-                    break
-                cursor = found
-                matched += 1
-            best_matched = max(best_matched, matched)
+        best_matched, sequence_subject, sequence_matches = ordered_sequence_match(
+            instance_events,
+            template_events,
+        )
         sequence_ratio = best_matched / len(template_events)
 
     occurrence_score = sum(occurrence_scores) / len(occurrence_scores)
@@ -669,6 +752,8 @@ def temporal_template_score(instance_graph: dict, template_graph: dict) -> dict:
         "max_occurrence_violation": max_occurrence_violation,
         "max_occurrence_penalty": min(max_occurrence_penalties, default=1.0),
         "event_matches": event_matches,
+        "sequence_subject": sequence_subject,
+        "sequence_matches": sequence_matches,
     }
 
 
@@ -765,6 +850,8 @@ def _score_template_v2(
         "matched_events": temporal["matched_events"],
         "required_events": temporal["required_events"],
         "event_matches": temporal["event_matches"],
+        "sequence_subject": temporal.get("sequence_subject"),
+        "sequence_matches": temporal.get("sequence_matches", []),
     }
 
 

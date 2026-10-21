@@ -11,6 +11,8 @@ from src_neurosymbolic.predicates.extract_predicates import (  # noqa: E402
     extract_coordination,
     extract_finger_motion,
     extract_motion,
+    trend_consistency_ratio,
+    validate_trend_consistency,
 )
 from src_neurosymbolic.events.build_events_phase_v2 import build_events_phase_v2  # noqa: E402
 
@@ -125,6 +127,51 @@ class PredicateV2Tests(unittest.TestCase):
             motion_threshold=0.08,
         )
         self.assertEqual(predicates, [])
+
+    def test_trend_consistency_keeps_monotonic_windows_and_rejects_reversal(self) -> None:
+        def make_frames(xs: list[float]) -> list[dict]:
+            return [
+                {
+                    "frame_id": frame_id,
+                    "valid": True,
+                    "keypoints": {
+                        "right_hand_root": keypoint(x, 0.0),
+                        "right_wrist": keypoint(x, -0.5),
+                    },
+                }
+                for frame_id, x in enumerate(xs)
+            ]
+
+        monotonic, _, _ = extract_motion(
+            make_frames([0.0, 0.12, 0.24, 0.36, 0.48]),
+            min_score=0.3,
+            window_size=4,
+            motion_threshold=0.08,
+            trend_consistency=0.75,
+        )
+        self.assertIn("hand_moves_right", {predicate["name"] for predicate in monotonic})
+
+        # The endpoint still moves right by enough to pass the old test, but
+        # the return/reversal consumes enough total variation to fail the gate.
+        reversing, _, _ = extract_motion(
+            make_frames([0.0, 0.24, 0.48, 0.28, 0.60]),
+            min_score=0.3,
+            window_size=4,
+            motion_threshold=0.08,
+            trend_consistency=0.75,
+        )
+        self.assertNotIn("hand_moves_right", {predicate["name"] for predicate in reversing})
+        self.assertAlmostEqual(trend_consistency_ratio([0.0, 0.12, 0.24, 0.36], 1), 1.0)
+        self.assertLess(trend_consistency_ratio([0.0, 0.24, 0.48, 0.28, 0.60], 1), 0.75)
+
+    def test_trend_consistency_is_recorded_and_range_checked(self) -> None:
+        config = build_predicate_config(trend_consistency=0.75)
+        self.assertEqual(config["trend_consistency"], 0.75)
+        self.assertEqual(config["trend_consistency_formula"], "signed_net_movement_over_total_variation")
+        with self.assertRaises(ValueError):
+            validate_trend_consistency(-0.01)
+        with self.assertRaises(ValueError):
+            validate_trend_consistency(1.01)
 
     def test_phase_v2_resolves_joint_angle_conflict_like_legacy_builder(self) -> None:
         result = build_events_phase_v2(

@@ -71,6 +71,11 @@ def test_ipn_symbolic_v2_colab_contract() -> None:
     assert "graph_progress.json" in text
     assert "Checkpointed" in text
     assert "completed_run.json" in text
+    assert "--trend-consistency', '0.6'" in text
+    assert "--min-best-score', '0.15'" in text
+    assert "--min-top2-margin', '0.02'" in text
+    assert "val_diagnostics.jsonl" in text
+    assert "selective_accuracy" in text
 
     # Final artifact sync must explicitly exclude copied raw inputs and temp batches.
     assert re.search(r"['\"]--exclude['\"]\s*,\s*['\"]data/keypoints/['\"]", text)

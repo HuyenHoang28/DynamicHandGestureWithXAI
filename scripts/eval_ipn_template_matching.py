@@ -11,10 +11,12 @@ Ví dụ:
 import argparse
 import hashlib
 import json
+import math
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -149,13 +151,20 @@ def sha256_json_directory(path: Path) -> str:
     return digest.hexdigest()
 
 
-def f1_table(matrix: list[list[int]]) -> list[dict]:
+def f1_table(matrix: list[list[int]], support_counts: Mapping[int, int] | None = None) -> list[dict]:
+    """Build per-class metrics, optionally counting abstentions in support.
+
+    The evaluator historically derived support from the confusion matrix.  An
+    abstained clip has no predicted column, so callers that enable abstention
+    pass the true-label counts explicitly.  Keeping the default ``None``
+    preserves the legacy behavior for callers that use this helper directly.
+    """
     rows = []
     n = len(matrix)
     for c in range(n):
         tp = matrix[c][c]
         predicted = sum(matrix[r][c] for r in range(n))
-        support = sum(matrix[c])
+        support = support_counts[c] if support_counts is not None else sum(matrix[c])
         precision = tp / predicted if predicted else 0.0
         recall = tp / support if support else 0.0
         f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
@@ -163,7 +172,82 @@ def f1_table(matrix: list[list[int]]) -> list[dict]:
     return rows
 
 
-def main() -> None:
+def diagnostic_record(
+    *,
+    source: str,
+    true_label_id: int,
+    scored: list[Mapping[str, Any]],
+    ordered_indices: list[int],
+    prediction: int | None,
+    abstained: bool,
+    abstention_reasons: list[str],
+    tie: bool,
+    best_score: float,
+    margin: float,
+    min_best_score: float | None,
+    min_top2_margin: float | None,
+) -> dict[str, Any]:
+    """Return one JSONL-safe, per-clip score/debug record.
+
+    ``score_template`` intentionally retains the complete result returned by
+    ``graph_matching.score_template``.  In particular this keeps its
+    ``event_matches`` evidence available when a clip is abstained, while the
+    compact ``scores`` and ``top_labels`` fields stay convenient for consumers
+    that only need ranking information.
+    """
+
+    compact_scores = [
+        {
+            "label_id": item.get("label_id", index),
+            "label_name": item.get("label_name", IPN_LABELS[index]),
+            "score": item.get("score"),
+        }
+        for index, item in enumerate(scored)
+    ]
+    top_labels = [
+        scored[index].get("label_name", IPN_LABELS[index])
+        for index in ordered_indices
+    ]
+    top_label_ids = [
+        scored[index].get("label_id", index)
+        for index in ordered_indices
+    ]
+    event_diagnostics = [
+        {
+            "label_id": item.get("label_id", index),
+            "label_name": item.get("label_name", IPN_LABELS[index]),
+            "score": item.get("score"),
+            "temporal_score": item.get("temporal_score"),
+            "matched_events": item.get("matched_events"),
+            "required_events": item.get("required_events"),
+            "event_matches": item.get("event_matches", []),
+        }
+        for index, item in enumerate(scored)
+    ]
+    predicted_label = "abstain" if abstained else IPN_LABELS[prediction]  # type: ignore[index]
+    return {
+        "source": source,
+        "true_label": IPN_LABELS[true_label_id],
+        "true_label_id": true_label_id,
+        "predicted_label": predicted_label,
+        "predicted_label_id": None if abstained else prediction,
+        "abstain": abstained,
+        "abstention_reasons": abstention_reasons,
+        "best_score": best_score,
+        "margin": margin,
+        "top2_margin": margin,
+        "tie": tie,
+        "scores": compact_scores,
+        "top_labels": top_labels,
+        "top_label_ids": top_label_ids,
+        "score_template": [dict(item) for item in scored],
+        "score_template_event_diagnostics": event_diagnostics,
+        "min_best_score": min_best_score,
+        "min_top2_margin": min_top2_margin,
+    }
+
+
+def _run_main(cleanups: list[Callable[[], None]]) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=Path("external_data/ipn_processed"))
     parser.add_argument("--split", choices=["train", "val", "test"], default="val")
@@ -184,7 +268,33 @@ def main() -> None:
         help="Allow instance graphs without V2 predicate metadata.",
     )
     parser.add_argument("--tie-tolerance", type=float, default=1e-9)
+    parser.add_argument(
+        "--min-best-score",
+        type=float,
+        default=None,
+        help="Abstain when the best template score is below this threshold.",
+    )
+    parser.add_argument(
+        "--min-top2-margin",
+        type=float,
+        default=None,
+        help="Abstain when the best-vs-second score margin is below this threshold.",
+    )
+    parser.add_argument(
+        "--diagnostics-jsonl",
+        type=Path,
+        help="Optionally write one per-clip score/event diagnostic JSON object per line.",
+    )
     args = parser.parse_args()
+
+    if args.min_best_score is not None and (
+        not math.isfinite(args.min_best_score) or args.min_best_score < 0
+    ):
+        parser.error("--min-best-score must be finite and non-negative")
+    if args.min_top2_margin is not None and (
+        not math.isfinite(args.min_top2_margin) or args.min_top2_margin < 0
+    ):
+        parser.error("--min-top2-margin must be finite and non-negative")
 
     data_root = args.data_root
     keypoint_root = args.keypoint_root or data_root / "keypoints"
@@ -205,6 +315,8 @@ def main() -> None:
     ties = 0
     tied_by_class = Counter()
     margins = []
+    abstained_count = 0
+    abstentions_by_class = Counter()
     cohort_predicate_config: Mapping[str, Any] | None = None
     cohort_build_config: Mapping[str, Any] | None = None
     predicate_config_signature: str | None = None
@@ -214,6 +326,27 @@ def main() -> None:
         for line in split_file.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
+    diagnostics_handle = None
+    diagnostics_temp_path = None
+    if args.diagnostics_jsonl:
+        args.diagnostics_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_handle = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=args.diagnostics_jsonl.parent,
+            prefix=f".{args.diagnostics_jsonl.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        diagnostics_temp_path = Path(diagnostics_handle.name)
+
+        def cleanup_diagnostics() -> None:
+            if diagnostics_handle is not None and not diagnostics_handle.closed:
+                diagnostics_handle.close()
+            if diagnostics_temp_path is not None:
+                diagnostics_temp_path.unlink(missing_ok=True)
+
+        cleanups.append(cleanup_diagnostics)
     for line in split_lines:
         try:
             source, _, label_text = line.rsplit(maxsplit=2)
@@ -268,14 +401,46 @@ def main() -> None:
         if len(best) > 1:
             ties += 1
             tied_by_class[label] += 1
-        ordered = sorted(scores, reverse=True)
-        margins.append(ordered[0] - ordered[1] if len(ordered) > 1 else ordered[0])
-        prediction = max(range(n), key=lambda c: scores[c])
-        matrix[label][prediction] += 1
+        ordered_indices = sorted(range(n), key=lambda c: scores[c], reverse=True)
+        ordered = [scores[index] for index in ordered_indices]
+        margin = ordered[0] - ordered[1] if len(ordered) > 1 else ordered[0]
+        margins.append(margin)
+        prediction = ordered_indices[0]
+        abstention_reasons = []
+        if args.min_best_score is not None and best_score < args.min_best_score:
+            abstention_reasons.append("best_score_below_threshold")
+        if args.min_top2_margin is not None and margin < args.min_top2_margin:
+            abstention_reasons.append("top2_margin_below_threshold")
+        abstained = bool(abstention_reasons)
         class_counts[label] += 1
+        if abstained:
+            abstained_count += 1
+            abstentions_by_class[label] += 1
+        else:
+            matrix[label][prediction] += 1
         facts, _ = instance_facts(graph)
         for concept in {concept for _, _, concept in facts}:
             concept_counts[label][concept] += 1
+
+        if diagnostics_handle is not None:
+            diagnostics_record = diagnostic_record(
+                source=source,
+                true_label_id=label,
+                scored=scored,
+                ordered_indices=ordered_indices,
+                prediction=None if abstained else prediction,
+                abstained=abstained,
+                abstention_reasons=abstention_reasons,
+                tie=len(best) > 1,
+                best_score=best_score,
+                margin=margin,
+                min_best_score=args.min_best_score,
+                min_top2_margin=args.min_top2_margin,
+            )
+            diagnostics_handle.write(
+                json.dumps(diagnostics_record, ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
 
     total = sum(class_counts.values())
     if missing and not args.allow_missing:
@@ -289,11 +454,19 @@ def main() -> None:
             f"{missing_support}; pass --allow-partial-labels to override"
         )
     correct = sum(matrix[c][c] for c in range(n))
-    rows = f1_table(matrix)
+    accepted_count = total - abstained_count
+    coverage = accepted_count / max(total, 1)
+    selective_accuracy = correct / max(accepted_count, 1)
+    rows = f1_table(matrix, class_counts)
     present = [row for row in rows if row["support"] > 0]
     macro_f1 = sum(row["f1"] for row in present) / max(len(present), 1)
     print(f"split={args.split} clips={total} missing_graphs={missing}")
     print(f"accuracy={correct / max(total, 1):.4f} macro_f1={macro_f1:.4f}")
+    print(
+        f"abstained={abstained_count}/{total} "
+        f"abstention_rate={abstained_count / max(total, 1):.4f} "
+        f"coverage={coverage:.4f} selective_accuracy={selective_accuracy:.4f}"
+    )
     print(f"ties={ties}/{total} tie_rate={ties / max(total, 1):.4f} mean_top2_margin={sum(margins) / max(len(margins), 1):.4f}")
     print("label  support  precision  recall  f1")
     for row in rows:
@@ -315,6 +488,11 @@ def main() -> None:
         for c in range(n)
         if class_counts[c]
     }
+    if diagnostics_handle is not None:
+        diagnostics_handle.flush()
+        diagnostics_handle.close()
+        diagnostics_temp_path.replace(args.diagnostics_jsonl)
+        cleanups.remove(cleanup_diagnostics)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         output_payload = {
@@ -329,8 +507,19 @@ def main() -> None:
             "missing_graphs": missing,
             "allow_legacy_graphs": args.allow_legacy_graphs,
             "allow_partial_labels": args.allow_partial_labels,
+            "min_best_score": args.min_best_score,
+            "min_top2_margin": args.min_top2_margin,
+            "diagnostics_jsonl": str(args.diagnostics_jsonl) if args.diagnostics_jsonl else None,
             "accuracy": correct / max(total, 1),
             "macro_f1": macro_f1,
+            "accepted_count": accepted_count,
+            "coverage": coverage,
+            "selective_accuracy": selective_accuracy,
+            "abstained_count": abstained_count,
+            "abstention_rate": abstained_count / max(total, 1),
+            "abstentions_by_class": {
+                IPN_LABELS[label]: abstentions_by_class[label] for label in range(n)
+            },
             "tie_count": ties,
             "tie_rate": ties / max(total, 1),
             "mean_top2_margin": sum(margins) / max(len(margins), 1),
@@ -357,6 +546,15 @@ def main() -> None:
             encoding="utf-8",
         )
         print(f"saved {args.output}")
+
+
+def main() -> None:
+    cleanups: list[Callable[[], None]] = []
+    try:
+        _run_main(cleanups)
+    finally:
+        for cleanup in reversed(cleanups):
+            cleanup()
 
 
 if __name__ == "__main__":

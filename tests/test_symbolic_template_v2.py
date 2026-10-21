@@ -212,6 +212,81 @@ gestures:
         self.assertEqual(correct["temporal_score"], 1.0)
         self.assertGreater(correct["score"], wrong["score"])
 
+    def test_ordered_sequence_rejects_overlapping_phase_reuse(self) -> None:
+        sequence = build_template_graph(
+            "G07",
+            8,
+            {
+                "description": "",
+                "notes": [],
+                "expected_events": [
+                    event_template(name)
+                    for name in ("closed", "open", "closed", "open")
+                ],
+                "negative_evidence": {},
+            },
+            WEIGHTS,
+        )
+        graph = instance_graph(["closed", "open", "closed", "open"])
+        event_nodes = [node for node in graph["nodes"] if node["type"] == "Event"]
+        event_nodes[0]["properties"]["end_frame"] = 25
+
+        result = score_template(graph, sequence)
+
+        self.assertLess(result["temporal_score"], 1.0)
+        for previous, current in zip(
+            result["sequence_matches"], result["sequence_matches"][1:]
+        ):
+            self.assertLess(previous["end_frame"], current["start_frame"])
+
+    def test_ordered_sequence_does_not_reuse_atomic_evidence(self) -> None:
+        sequence = build_template_graph(
+            "G07",
+            8,
+            {
+                "description": "",
+                "notes": [],
+                "expected_events": [event_template("closed"), event_template("open")],
+                "negative_evidence": {},
+            },
+            WEIGHTS,
+        )
+        # Different concepts avoid same-template episode deduplication. The
+        # intervals do not overlap, so only the shared occurrence ID can stop
+        # the second phase from reusing the first phase's physical evidence.
+        graph = instance_graph(["closed", "open"])
+        for edge in graph["edges"]:
+            edge.setdefault("properties", {})["atomic_event_ids"] = ["same-action"]
+
+        result = score_template(graph, sequence)
+
+        self.assertEqual(result["matched_events"], 1)
+        self.assertEqual(result["temporal_score"], 0.5)
+
+    def test_ordered_sequence_backtracks_when_earliest_candidate_blocks_completion(self) -> None:
+        sequence = build_template_graph(
+            "G07",
+            8,
+            {
+                "description": "",
+                "notes": [],
+                "expected_events": [event_template("closed"), event_template("open")],
+                "negative_evidence": {},
+            },
+            WEIGHTS,
+        )
+        graph = instance_graph(["closed", "closed", "open"])
+        for index, edge in enumerate(graph["edges"]):
+            edge.setdefault("properties", {})["atomic_event_ids"] = [
+                "shared-action" if index in (0, 2) else "later-closed"
+            ]
+
+        result = score_template(graph, sequence)
+
+        self.assertEqual(result["temporal_score"], 1.0)
+        self.assertEqual(result["matched_events"], 2)
+        self.assertEqual(result["sequence_matches"][0]["instance_events"], ["event:2"])
+
     def test_max_occurrence_violation_uses_soft_penalty_multi_event_template(self) -> None:
         template = build_template_graph(
             "GXX",

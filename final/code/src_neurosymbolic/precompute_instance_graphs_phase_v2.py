@@ -23,8 +23,10 @@ from src_neurosymbolic.predicates.extract_predicates import (
     IPN_FINGER_MOTION_THRESHOLD,
     IPN_HAND_MOTION_THRESHOLD,
     IPN_PINCH_THRESHOLD,
+    IPN_TREND_CONSISTENCY,
     build_predicate_config,
     extract_predicates,
+    validate_trend_consistency,
 )
 
 
@@ -106,6 +108,20 @@ def file_fingerprint(path: Path, kind: str, logical_source: str) -> dict:
     }
 
 
+def stable_logical_source(
+    graph_path: Path,
+    output_root: Path,
+) -> str:
+    """Return the validated graph-relative identity used for provenance."""
+
+    try:
+        return graph_path.resolve().relative_to(output_root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(
+            f"Instance graph escapes output root: {graph_path} (root={output_root})"
+        ) from exc
+
+
 def precompute_split(
     split_file: Path,
     keypoint_root: Path,
@@ -125,6 +141,7 @@ def precompute_split(
     finger_motion_threshold: float | None = None,
     pinch_threshold: float | None = None,
     continue_on_error: bool = False,
+    trend_consistency: float | None = None,
 ) -> dict:
     # Keep a legacy aggregate threshold for programmatic callers while making
     # the phase-v2/IPN defaults explicit for new precompute runs.
@@ -137,6 +154,12 @@ def precompute_split(
         resolved_hand_threshold = IPN_HAND_MOTION_THRESHOLD if hand_motion_threshold is None else hand_motion_threshold
         resolved_finger_threshold = IPN_FINGER_MOTION_THRESHOLD if finger_motion_threshold is None else finger_motion_threshold
         resolved_pinch_threshold = IPN_PINCH_THRESHOLD if pinch_threshold is None else pinch_threshold
+    # Phase-v2 always uses the conservative IPN preset unless a caller opts
+    # out explicitly with zero. Direct extract_predicates callers retain the
+    # endpoint-only default for backward compatibility.
+    resolved_trend_consistency = validate_trend_consistency(
+        IPN_TREND_CONSISTENCY if trend_consistency is None else trend_consistency
+    )
     expected_predicate_config = build_predicate_config(
         min_score=0.3,
         window_size=5,
@@ -144,6 +167,7 @@ def precompute_split(
         hand_motion_threshold=resolved_hand_threshold,
         finger_motion_threshold=resolved_finger_threshold,
         pinch_threshold=resolved_pinch_threshold,
+        trend_consistency=resolved_trend_consistency,
     )
     build_config = {
         "schema_version": 2,
@@ -186,7 +210,15 @@ def precompute_split(
                 if not input_path or not input_path.exists():
                     raise FileNotFoundError(f"No keypoint JSON or tensor cache for {source}")
                 input_kind = "tensor_cache"
-            source_fingerprint = file_fingerprint(input_path, input_kind, source)
+            logical_source = stable_logical_source(
+                out_path,
+                output_root,
+            )
+            source_fingerprint = file_fingerprint(
+                input_path,
+                input_kind,
+                logical_source,
+            )
 
             if out_path.exists() and not overwrite:
                 existing = json.loads(out_path.read_text(encoding="utf-8"))
@@ -215,6 +247,7 @@ def precompute_split(
                     hand_motion_threshold=resolved_hand_threshold,
                     finger_motion_threshold=resolved_finger_threshold,
                     pinch_threshold=resolved_pinch_threshold,
+                    trend_consistency=resolved_trend_consistency,
                 )
                 events_data = build_events_phase_v2(
                     predicates_data,
@@ -231,6 +264,7 @@ def precompute_split(
                 instance_graph["predicate_config"] = predicate_config
                 instance_graph["provenance"] = {
                     "predicate_config": predicate_config,
+                    "trend_consistency": predicate_config.get("trend_consistency"),
                     "event_builder": "phase_v2",
                     "build_config": build_config,
                     "source_fingerprint": source_fingerprint,
@@ -302,6 +336,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=f"Threshold for normalized thumb-index pinch distance trends (IPN phase-v2 default: {IPN_PINCH_THRESHOLD}).",
     )
+    parser.add_argument(
+        "--trend-consistency",
+        "--trend-consistency-threshold",
+        dest="trend_consistency",
+        type=float,
+        default=IPN_TREND_CONSISTENCY,
+        help=(
+            "Minimum signed movement / total variation ratio in [0, 1] "
+            f"(IPN phase-v2 default: {IPN_TREND_CONSISTENCY}; 0 disables the gate)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -333,6 +378,7 @@ def main() -> None:
                 hand_motion_threshold=args.hand_motion_threshold,
                 finger_motion_threshold=args.finger_motion_threshold,
                 pinch_threshold=args.pinch_threshold,
+                trend_consistency=args.trend_consistency,
                 continue_on_error=args.allow_failures,
             )
         )
