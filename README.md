@@ -4,6 +4,8 @@ Repo này chứa bản code gọn để người khác clone về chạy lại p
 
 Data cache và checkpoint không được commit trực tiếp vào GitHub để repo nhẹ, dễ clone, và tránh giới hạn dung lượng. Sau khi clone, người dùng cần tải/copy data vào đúng đường dẫn như phần bên dưới.
 
+Để hiểu pipeline IPN 13 lớp hiện tại từ dữ liệu, neural, pooling và augmentation đến symbolic/fusion, đọc [Handbook toàn diện IPN neuro-symbolic](docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md).
+
 ## Nội dung repo
 
 ```text
@@ -13,6 +15,7 @@ final/data/Output/checkpoints/      Không commit; cần tải/copy riêng nếu
 final/scripts/                      Script vẽ confusion matrix
 keypoint_extractor/                 Script trích xuất keypoint RTMW-L từ video
 requirements.txt                    Thư viện Python cần cài
+docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md  Handbook IPN 13 lớp hiện tại
 scripts/verify_repo.py              Kiểm tra nhanh dữ liệu/checkpoint bắt buộc
 scripts/run_train_fusion.ps1        Chạy lại train mô hình fusion chính
 scripts/run_test_fusion.ps1         Test checkpoint fusion
