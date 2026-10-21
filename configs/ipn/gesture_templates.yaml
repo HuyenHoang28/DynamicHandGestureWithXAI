@@ -1,9 +1,10 @@
 # Temporal template V2 cho IPN Hand 13 lớp (bỏ D0X).
-# Revision sau thử nghiệm A: ưu tiên conjunction trong cùng episode và bỏ negative
-# evidence toàn clip vì các predicate chuyển động trả tay xuất hiện ở hầu hết lớp.
+# Revision sau khi chốt neural C: ưu tiên G02/G09, G01/G08 và G10/G11,
+# dùng conjunction trong cùng episode và bỏ negative evidence toàn clip vì các
+# predicate chuyển động trả tay xuất hiện ở hầu hết lớp.
 # Count/order chỉ được hiệu chỉnh trên train/validation; không sửa template theo test.
 version: 2
-description: Conservative post-experiment-A templates for neural arbitration, label ids 0-12
+description: Conservative post-experiment-C templates for neural arbitration, label ids 0-12
 template_policy:
   matching:
     required_weight: 1.0

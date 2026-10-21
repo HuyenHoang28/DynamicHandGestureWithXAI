@@ -4,7 +4,7 @@ Tài liệu này là quy trình làm việc cho giai đoạn symbolic song song 
 
 ## 1. Điểm xuất phát và tiêu chí chốt neural
 
-Ba cấu hình dùng cùng seed 42; A đã hoàn tất, B/C vẫn cần chạy trước khi chốt neural cuối cùng:
+Ba cấu hình đã hoàn tất trên cùng validation split và seed 42:
 
 | Tên | Pooling | Frame masking | Keypoint dropout | Câu hỏi cần trả lời |
 |---|---|---:|---:|---|
@@ -12,7 +12,13 @@ Ba cấu hình dùng cùng seed 42; A đã hoàn tất, B/C vẫn cần chạy t
 | B_masked_mean | Masked mean | 0.05 | 0.03 | Pooling đơn giản có ổn định hơn không? |
 | C_masked_mean_light_dropout | Masked mean | 0.00 | 0.02 | Giảm augmentation có giữ được tín hiệu động tác nhỏ không? |
 
-Kết quả validation đã chốt của `A_attention`: accuracy **0.8761**, Macro-F1 **0.8157**, best epoch 34. Lớp yếu nhất là G01 (F1 0.531), tiếp theo là G08 (0.645), G09 (0.667) và G02 (0.691). Các nhầm lẫn có cấu trúc chính là G01→G08: 11, G08→G01: 6; G02→G09: 7, G09→G02: 5; G10→G11: 4, G11→G10: 1. Đây là cơ sở validation cho revision template sau A; không dùng kết quả test để viết luật.
+| Run | Accuracy | Macro-F1 | Minimum class F1 | Best epoch |
+|---|---:|---:|---:|---:|
+| A_attention | 0.8761 | 0.8157 | 0.5306 | 34 |
+| B_masked_mean_matched_A | 0.8591 | 0.7996 | 0.4783 | 17 |
+| **C_masked_mean_light_dropout** | **0.8913** | **0.8376** | **0.6275** | 48 |
+
+Theo tiêu chí định trước, **C là neural baseline được chọn**. Trên C, ba lớp còn dưới F1 0.65 là G01 (0.6275), G02 (0.6296) và G09 (0.6441). Nhầm lẫn có cấu trúc chính là G01→G08: 6, G08→G01: 6; G02→G09: 7, G09→G02: 6; G10→G11: 2, G11→G10: 0. Đây là cơ sở validation cho revision template sau C; không dùng kết quả test để viết luật.
 
 Chỉ dùng validation để chọn cấu hình. Thứ tự xếp hạng là:
 
@@ -48,14 +54,14 @@ Evidence rõ, đủ và không mâu thuẫn    -> cho phép đổi nhãn
 Evidence thiếu hoặc mâu thuẫn          -> giữ dự đoán neural
 ```
 
-Điểm khởi đầu bảo thủ để tune trên validation là chỉ xét override khi xác suất top-1 dưới 0.70 và khoảng cách top-1/top-2 dưới 0.10. Hai ngưỡng này chưa phải giá trị cuối; chúng phải được hiệu chỉnh trên train/validation.
+Không tái sử dụng cứng ngưỡng top-1 0.70 và khoảng cách top-1/top-2 0.10 của bản nháp: trên C, cặp ngưỡng này chỉ bao phủ 3/64 lỗi validation. Confidence gate và margin gate phải được tune lại trên validation của C, đồng thời báo cáo precision của override.
 
-Template không nên can thiệp mọi lớp. Phạm vi đầu tiên chỉ gồm:
+Template không nên can thiệp mọi lớp. Phạm vi ưu tiên theo lỗi còn lại của C là:
 
-- G01 và G08: click một lần so với hai lần bằng một ngón;
 - G02 và G09: click một lần so với hai lần bằng hai ngón;
+- G01 và G08: click một lần so với hai lần bằng một ngón;
 - G10 và G11: khoảng cách pinch tăng so với giảm;
-- G07: chuỗi đóng–mở–đóng–mở.
+- G07 chỉ tiếp tục được kiểm chứng rule-only; không ưu tiên override vì neural C đã đạt F1 0.8846 và matcher sequence còn hạn chế.
 
 ## 3. Template hiện tại và việc cần kiểm chứng
 
