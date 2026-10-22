@@ -82,6 +82,19 @@ def parse_template_yaml(path: Path) -> dict:
             raise ValueError(f"{canonical} must be a finite number")
         matching[canonical] = value
 
+    role_alignment_floor = matching.get("role_alignment_floor", 1.0)
+    if isinstance(role_alignment_floor, bool):
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]")
+    try:
+        role_alignment_floor = float(role_alignment_floor)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]") from exc
+    if not math.isfinite(role_alignment_floor) or not 0.0 <= role_alignment_floor <= 1.0:
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]")
+    if version < 2 and role_alignment_floor != 1.0:
+        raise ValueError("role_alignment_floor requires template version 2")
+    matching["role_alignment_floor"] = role_alignment_floor
+
     allowed_event_keys = {"subject", "min_occurrences", "max_occurrences", "action_role", *FIELD_TO_NODE_TYPE_AND_RELATION}
     for label, gesture in gestures.items():
         if not isinstance(gesture, dict):
@@ -210,7 +223,18 @@ def build_template_graph(
     template: dict,
     weights: dict[str, float],
     schema_version: int = 2,
+    role_alignment_floor: float = 1.0,
 ) -> dict:
+    if isinstance(role_alignment_floor, bool):
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]")
+    try:
+        role_alignment_floor = float(role_alignment_floor)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]") from exc
+    if not math.isfinite(role_alignment_floor) or not 0.0 <= role_alignment_floor <= 1.0:
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]")
+    if schema_version < 2 and role_alignment_floor != 1.0:
+        raise ValueError("role_alignment_floor requires template version 2")
     gesture_id = f"gesture:{label_name}"
     nodes: dict[str, dict] = {}
     edges: list[dict] = []
@@ -336,6 +360,7 @@ def build_template_graph(
         "graph_type": "template_graph",
         "schema_version": schema_version,
         "matching_weights": dict(weights),
+        "matching_policy": {"role_alignment_floor": float(role_alignment_floor)},
         "label_id": label_id,
         "label_name": label_name,
         "nodes": list(nodes.values()),
@@ -375,6 +400,11 @@ def main() -> None:
         level: float(parsed["template_policy"]["matching"][f"{level}_weight"])
         for level in DEFAULT_WEIGHTS
     }
+    matching_policy = {
+        "role_alignment_floor": float(
+            parsed["template_policy"]["matching"]["role_alignment_floor"]
+        )
+    }
     label_ids = load_label_ids(args.labels, args.list_file)
     fallback_label_ids = {label: idx for idx, label in enumerate(sorted(gestures))}
 
@@ -387,6 +417,7 @@ def main() -> None:
             gestures[label_name],
             weights,
             schema_version=int(parsed["version"]),
+            role_alignment_floor=matching_policy["role_alignment_floor"],
         )
         graphs.append(graph)
         write_json(graph, args.output_dir / f"{label_name}.json", args.pretty)
@@ -397,6 +428,7 @@ def main() -> None:
         "template_source": str(args.templates.as_posix()),
         "template_sha256": hashlib.sha256(args.templates.read_bytes()).hexdigest(),
         "matching_weights": weights,
+        "matching_policy": matching_policy,
         "template_count": len(graphs),
         "templates": [
             {

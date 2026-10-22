@@ -170,6 +170,103 @@ class SymbolicTemplateV2Tests(unittest.TestCase):
         self.assertEqual(len(result["role_intervals"]["active"]), 1)
         self.assertEqual(len(result["role_intervals"]["return"]), 1)
 
+    def test_role_alignment_softly_downweights_return_heavy_evidence(self) -> None:
+        template = build_template_graph(
+            "G10", 11,
+            {"description": "", "notes": [], "expected_events": [
+                event_template("pinch_distance_increasing")
+            ], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        graph = instance_graph(["pinch_distance_increasing", "pinch_distance_increasing"])
+        graph["edges"][0]["properties"]["action_roles"] = ["active"]
+        graph["edges"][1]["properties"]["action_roles"] = ["return"]
+
+        legacy = score_template(graph, template)
+        self.assertEqual(legacy["role_alignment"]["multiplier"], 1.0)
+        self.assertFalse(legacy["role_alignment"]["applied"])
+
+        template["matching_policy"] = {"role_alignment_floor": 0.85}
+        adjusted = score_template(graph, template)
+        self.assertEqual(adjusted["role_alignment"]["counts"]["active"], 1)
+        self.assertEqual(adjusted["role_alignment"]["counts"]["return"], 1)
+        self.assertEqual(adjusted["role_alignment"]["active_share"], 0.5)
+        self.assertEqual(adjusted["role_alignment"]["multiplier"], 0.925)
+        self.assertAlmostEqual(adjusted["score"], legacy["score"] * 0.925, places=6)
+
+    def test_role_alignment_does_not_penalize_only_ambiguous_evidence(self) -> None:
+        template = build_template_graph(
+            "G10", 11,
+            {"description": "", "notes": [], "expected_events": [
+                event_template("pinch_distance_increasing")
+            ], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        template["matching_policy"] = {"role_alignment_floor": 0.85}
+        graph = instance_graph(["pinch_distance_increasing"])
+        graph["edges"][0]["properties"]["action_roles"] = ["ambiguous"]
+        result = score_template(graph, template)
+        self.assertEqual(result["role_alignment"]["counts"]["ambiguous"], 1)
+        self.assertIsNone(result["role_alignment"]["active_share"])
+        self.assertEqual(result["role_alignment"]["multiplier"], 1.0)
+        self.assertFalse(result["role_alignment"]["applied"])
+
+    def test_role_alignment_bounds_all_active_and_all_return_evidence(self) -> None:
+        template = build_template_graph(
+            "G10", 11,
+            {"description": "", "notes": [], "expected_events": [
+                event_template("pinch_distance_increasing")
+            ], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        template["matching_policy"] = {"role_alignment_floor": 0.85}
+        graph = instance_graph(["pinch_distance_increasing"])
+        graph["edges"][0]["properties"]["action_roles"] = ["active"]
+        active = score_template(graph, template)
+        self.assertEqual(active["role_alignment"]["active_share"], 1.0)
+        self.assertEqual(active["role_alignment"]["multiplier"], 1.0)
+
+        graph["edges"][0]["properties"]["action_roles"] = ["return"]
+        returning = score_template(graph, template)
+        self.assertEqual(returning["role_alignment"]["active_share"], 0.0)
+        self.assertEqual(returning["role_alignment"]["multiplier"], 0.85)
+        self.assertAlmostEqual(returning["score"], active["score"] * 0.85, places=6)
+
+        del graph["edges"][0]["properties"]["action_roles"]
+        unknown = score_template(graph, template)
+        self.assertEqual(unknown["role_alignment"]["counts"]["unknown"], 1)
+        self.assertEqual(unknown["role_alignment"]["multiplier"], 1.0)
+
+    def test_role_alignment_rejects_invalid_external_template_policy(self) -> None:
+        template = build_template_graph(
+            "G10", 11,
+            {"description": "", "notes": [], "expected_events": [
+                event_template("pinch_distance_increasing")
+            ], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        template["matching_policy"] = {"role_alignment_floor": -0.1}
+        with self.assertRaisesRegex(ValueError, "role_alignment_floor"):
+            score_template(instance_graph(["pinch_distance_increasing"]), template)
+
+        definition = {
+            "description": "",
+            "notes": [],
+            "expected_events": [event_template("pinch_distance_increasing")],
+            "negative_evidence": {},
+        }
+        with self.assertRaisesRegex(ValueError, "role_alignment_floor"):
+            build_template_graph(
+                "G10", 11, definition, WEIGHTS,
+                role_alignment_floor=float("nan"),
+            )
+        with self.assertRaisesRegex(ValueError, "requires template version 2"):
+            build_template_graph(
+                "G10", 11, definition, WEIGHTS,
+                schema_version=1,
+                role_alignment_floor=0.85,
+            )
+
     def test_template_parser_rejects_unknown_action_role_and_defaults_legacy_to_any(self) -> None:
         def parse(role: str | None) -> dict:
             role_line = f"        action_role: {role}\n" if role is not None else ""

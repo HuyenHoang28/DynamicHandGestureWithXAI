@@ -11,6 +11,7 @@ template_policy:
     preferred_weight: 0.5
     optional_weight: 0.25
     negative_weight: -0.5
+    role_alignment_floor: 0.85
 gestures:
   B0A:
     description: Pointing with one finger - index finger extended, hand moves slowly like a cursor

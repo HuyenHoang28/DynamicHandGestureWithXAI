@@ -186,3 +186,55 @@ Revision kế tiếp thực hiện:
 - tiếp tục giữ pairwise ở `audit_only`, không bật override, không chạy test.
 
 Rescore 589 graph 6ef với hard role gate đã bỏ cho accuracy `0.06621`, Macro-F1 `0.04686`, coverage `0.20713`, selective accuracy `0.31967`; gần như phục hồi mốc 0351 và xác nhận đúng nguyên nhân regression. Full repository suite sau thay đổi: `115 passed`, `3` warning PyTorch đã có sẵn; focused suite sau review fix: `73 passed`.
+
+---
+
+## Cập nhật 2026-10-22 — soft action-role alignment sau artifact d25
+
+### Nguồn quyết định
+
+Artifact `external_data/d255086f928a0615-20261022T075132Z-1-001.zip` hợp lệ, đúng commit `1ef544c`, đủ `2443` train và `589` validation graph, không thiếu graph. `directional_reversal_v2` giảm role `ambiguous` từ `63,2%` ở 6ef xuống `8186/274894 = 2,98%`, nhưng kết quả classifier gần như trở lại mốc 0351: validation accuracy `0.06621`, Macro-F1 `0.04686`, coverage `0.20713` và selective accuracy `0.31967`.
+
+Hard `action_role: active` không được phục hồi vì đã chứng minh làm mất recall. Thay vào đó matcher áp dụng `active_share_soft_v1` trên các interval có role quyết định:
+
+`active_share = active / (active + return)`
+
+`multiplier = floor + (1 - floor) * active_share`
+
+- `role_alignment_floor` được cấu hình tại `template_policy.matching`, revision này dùng `0.85`; vì vậy role chỉ có thể hạ tối đa 15% điểm template, không thể xóa evidence.
+- `ambiguous` và `unknown` được báo cáo nhưng không tham gia mẫu số và không làm giảm điểm.
+- Template V2 cũ hoặc graph V2 không có policy mặc định dùng floor `1.0`, giữ nguyên điểm số cũ. Template V1 chỉ chấp nhận `1.0`; cấu hình V1 khác `1.0` bị từ chối để không quảng bá một policy mà nhánh matcher V1 không thực thi.
+- Mỗi dòng `score_template` bổ sung `role_alignment` gồm algorithm, floor, số interval theo role, active share, multiplier và trạng thái applied.
+- Template graph và index bổ sung `matching_policy.role_alignment_floor`; parser từ chối bool, NaN/Infinity và giá trị ngoài `[0,1]`.
+- Template tiếp tục dùng `action_role: any`; pairwise neural/symbolic vẫn `audit_only`, override vẫn tắt.
+
+### Validation an toàn
+
+Chấm lại trực tiếp toàn bộ `589` validation graph của d25 bằng template graph mới, cùng threshold `0.15/0.02`:
+
+| Metric | d25 trước | Soft role 0.85 |
+|---|---:|---:|
+| Raw accuracy | `0.21732` | `0.23430` |
+| Raw Macro-F1 | `0.08679` | `0.09009` |
+| Thresholded accuracy | `0.06621` | `0.10017` |
+| Thresholded Macro-F1 | `0.04686` | `0.06182` |
+| Coverage | `0.20713` | `0.27844` |
+| Selective accuracy | `0.31967` | `0.35976` |
+| Tie rate | `0.47878` | `0.43294` |
+| Mean top-2 margin | `0.01320` | `0.01750` |
+
+Floor `0.85` là lựa chọn calibration bảo thủ trên validation, chưa phải hằng số đã xác nhận bằng locked test. Sweep lân cận dùng cùng graph, template và threshold:
+
+| Floor | Raw acc. | Raw Macro-F1 | Thresholded acc. | Thresholded Macro-F1 | Coverage | Selective acc. |
+|---:|---:|---:|---:|---:|---:|---:|
+| `0.800` | `0.23090` | `0.08354` | `0.10187` | `0.06155` | `0.28862` | `0.35294` |
+| `0.825` | `0.23090` | `0.08354` | `0.10187` | `0.06166` | `0.28693` | `0.35503` |
+| `0.850` | `0.23430` | `0.09009` | `0.10017` | `0.06182` | `0.27844` | `0.35976` |
+| `0.875` | `0.23430` | `0.09049` | `0.09677` | `0.05649` | `0.27334` | `0.35404` |
+| `0.900` | `0.23260` | `0.08708` | `0.09338` | `0.06023` | `0.26655` | `0.35032` |
+
+`0.85` được chọn vì giới hạn penalty tối đa ở 15%, đồng hạng raw accuracy tốt nhất trong vùng khảo sát, đồng thời đạt Thresholded Macro-F1 và selective accuracy tốt nhất trong năm điểm trên. Đây vẫn là lựa chọn theo validation; locked test tiếp tục đóng.
+
+Audit với neural C tại neural margin `0.20` vẫn đề xuất đúng một override và override đó harmful (`net -1`), nên thay đổi này chưa cấp quyền bật fusion. Locked test không được chạy.
+
+Validation cuối: focused suite `55 passed`; full repository suite `123 passed`, `3` warning PyTorch đã có sẵn. Review độc lập không còn blocker sau khi khóa config production bằng test, thêm contract V1 và ghi rõ tiêu chí chọn floor từ sweep lân cận.

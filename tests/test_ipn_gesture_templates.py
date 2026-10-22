@@ -1,4 +1,6 @@
 import sys
+import subprocess
+import pytest
 from pathlib import Path
 
 
@@ -65,6 +67,82 @@ def test_ipn_g07_requires_closed_open_closed_open_sequence() -> None:
         {"hand_closed"},
         {"hand_open"},
     ]
+
+
+def _write_template_config(path: Path, policy: str = "") -> None:
+    path.write_text(
+        "version: 2\n" + policy + "gestures:\n"
+        "  G01:\n"
+        "    expected_events:\n"
+        "      - subject: any\n"
+        "        finger_motions:\n"
+        "          required: [click]\n",
+        encoding="utf-8",
+    )
+
+
+def test_role_alignment_floor_defaults_and_validates(tmp_path: Path) -> None:
+    missing_policy = tmp_path / "missing.yaml"
+    _write_template_config(missing_policy)
+    assert parse_template_yaml(missing_policy)["template_policy"]["matching"]["role_alignment_floor"] == 1.0
+
+    missing_value = tmp_path / "missing_value.yaml"
+    _write_template_config(missing_value, "template_policy:\n  matching: {}\n")
+    assert parse_template_yaml(missing_value)["template_policy"]["matching"]["role_alignment_floor"] == 1.0
+
+    for value in ("true", "NaN", ".inf", "-0.01", "1.01", "null", "not_a_number"):
+        config = tmp_path / "invalid.yaml"
+        _write_template_config(
+            config,
+            f"template_policy:\n  matching:\n    role_alignment_floor: {value}\n",
+        )
+        with pytest.raises(ValueError, match="role_alignment_floor"):
+            parse_template_yaml(config)
+
+    version_one = tmp_path / "version_one.yaml"
+    _write_template_config(
+        version_one,
+        "template_policy:\n  matching:\n    role_alignment_floor: 0.85\n",
+    )
+    version_one.write_text(
+        version_one.read_text(encoding="utf-8").replace("version: 2", "version: 1"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="requires template version 2"):
+        parse_template_yaml(version_one)
+
+
+def test_role_alignment_floor_is_carried_into_graph_and_index(tmp_path: Path) -> None:
+    config = tmp_path / "templates.yaml"
+    _write_template_config(
+        config,
+        "template_policy:\n  matching:\n    role_alignment_floor: 0.85\n",
+    )
+    output_dir = tmp_path / "graphs"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "final" / "code" / "src_neurosymbolic" / "kg" / "build_template_graph.py"),
+            "--templates", str(config),
+            "--labels", str(tmp_path / "missing_labels.yaml"),
+            "--list-file", str(tmp_path / "missing_train.txt"),
+            "--output-dir", str(output_dir),
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    import json
+
+    graph = json.loads((output_dir / "G01.json").read_text(encoding="utf-8"))
+    index = json.loads((output_dir / "index.json").read_text(encoding="utf-8"))
+    assert graph["matching_policy"]["role_alignment_floor"] == 0.85
+    assert index["matching_policy"]["role_alignment_floor"] == 0.85
+
+
+def test_production_role_alignment_floor_is_locked() -> None:
+    assert _templates()["template_policy"]["matching"]["role_alignment_floor"] == 0.85
 
 
 def test_post_experiment_a_templates_do_not_use_clip_global_negative_evidence() -> None:

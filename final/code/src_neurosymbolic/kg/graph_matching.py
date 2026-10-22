@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +15,7 @@ CONCEPT_RELATIONS = {
     "HAS_JOINT_ANGLE",
 }
 ACTION_ROLE_RELATIONS = {"HAS_MOTION", "HAS_FINGER_MOTION", "HAS_COORDINATION", "HAS_SWEEP"}
+ROLE_ALIGNMENT_ALGORITHM = "active_share_soft_v1"
 
 
 def load_json(path: Path) -> dict:
@@ -714,6 +716,45 @@ def _candidate_role_diagnostics(
     return shared or {"ambiguous"}
 
 
+def _role_alignment_adjustment(
+    role_intervals: dict[str, list[dict]],
+    floor: float,
+) -> dict:
+    """Return a bounded soft preference for action-phase evidence.
+
+    Only decisive ``active`` and ``return`` intervals contribute to the share.
+    Ambiguous/unknown evidence is reported but cannot lower a score.  A floor
+    of 1.0 exactly preserves legacy scoring, while lower floors avoid the
+    catastrophic evidence deletion caused by the former hard active-role gate.
+    """
+    if isinstance(floor, bool):
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]")
+    floor = float(floor)
+    if not math.isfinite(floor) or not 0.0 <= floor <= 1.0:
+        raise ValueError("role_alignment_floor must be a finite number in [0, 1]")
+
+    counts = {
+        role: len(role_intervals.get(role, ()))
+        for role in ("active", "return", "ambiguous", "unknown")
+    }
+    decisive_count = counts["active"] + counts["return"]
+    active_share = counts["active"] / decisive_count if decisive_count else None
+    multiplier = (
+        floor + (1.0 - floor) * active_share
+        if active_share is not None
+        else 1.0
+    )
+    return {
+        "algorithm": ROLE_ALIGNMENT_ALGORITHM,
+        "floor": round(floor, 6),
+        "counts": counts,
+        "decisive_count": decisive_count,
+        "active_share": round(active_share, 6) if active_share is not None else None,
+        "multiplier": round(multiplier, 6),
+        "applied": decisive_count > 0 and floor < 1.0,
+    }
+
+
 def temporal_template_score(instance_graph: dict, template_graph: dict) -> dict:
     template_events = template_event_groups(template_graph)
     instance_events = instance_event_records(instance_graph)
@@ -914,6 +955,12 @@ def _score_template_v2(
     normalized_score = max(0.0, min(1.0, normalized_score)) * required_ratio
     temporal = temporal_template_score(instance_graph, template_graph)
     normalized_score *= float(temporal["score"])
+    matching_policy = template_graph.get("matching_policy") or {}
+    role_alignment = _role_alignment_adjustment(
+        role_intervals,
+        matching_policy.get("role_alignment_floor", 1.0),
+    )
+    normalized_score *= float(role_alignment["multiplier"])
 
     return {
         "label_id": template_graph.get("label_id"),
@@ -933,6 +980,7 @@ def _score_template_v2(
         "negative_hits": serialize_requirements(negative_hits),
         "role_intervals": role_intervals,
         "active_intervals": role_intervals["active"],
+        "role_alignment": role_alignment,
         "temporal_score": round(float(temporal["score"]), 6),
         "matched_events": temporal["matched_events"],
         "required_events": temporal["required_events"],

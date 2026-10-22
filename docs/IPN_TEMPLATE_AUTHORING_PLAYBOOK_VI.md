@@ -88,6 +88,7 @@ Các giới hạn của matcher phải nhớ khi viết template:
 - Shape là tín hiệu theo frame, motion cần một cửa sổ dài hơn; hai dấu hiệu đúng có thể nằm ở hai phase kề nhau.
 - Sequence matching hiện mang tính greedy và chưa tối ưu trực tiếp toàn bộ ràng buộc `BEFORE`.
 - Từ revision `phase_v4_action_role_audit`, matcher vẫn gắn vai trò `active`, `return`, `ambiguous` theo từng subject/family nhưng template classifier dùng `action_role: any`. Role chỉ là diagnostic/gate cho pairwise arbitration cho tới khi validation chứng minh precision đủ tốt. Run đối hướng có tâm interval theo thứ tự vẫn được xem là action rồi return dù biên sliding window chồng nhau; chỉ run gần như đồng thời mới `ambiguous`.
+- Sau artifact d25, classifier V2 dùng role như một tín hiệu mềm, không phải hard gate: `active_share_soft_v1` nhân điểm với hệ số từ `role_alignment_floor` đến `1.0`; cấu hình hiện tại dùng floor validation-tuned `0.85`. Chỉ `active` và `return` quyết định tỷ lệ, còn `ambiguous`/`unknown` không bị phạt. V1 chỉ hợp lệ với floor `1.0`. Không đặt lại `action_role: active` trong template nếu chưa có validation riêng chứng minh không làm mất recall.
 - `kg_logits` của mô hình V4 không phải điểm symbolic thuần vì nhánh đó có attention tới neural memory. Override hậu xử lý phải dùng evidence từ template matcher.
 
 ## 4. Quy trình authoring cho từng cặp
@@ -121,6 +122,8 @@ Chỉ override khi tồn tại một chiều pinch trội trong active interval:
 Negative evidence chiều ngược không nên lấy từ toàn clip; cần giới hạn vào matched interval trước khi dùng mạnh.
 
 Matcher xuất `role_intervals` cho mọi candidate đầy đủ required directional evidence, kể cả template `action_role: any`; `active_intervals` là alias tương thích của nhánh `active`. Arbitration G10/G11 phải từ chối nếu cả hai chiều đều có active interval hoặc nếu không có active interval rõ ràng; không được suy diễn từ evidence `return`.
+
+Matcher đồng thời xuất `role_alignment` theo từng candidate template để audit tác động của role lên điểm. Đây là calibration mềm cho classifier, không thay thế các gate bảo thủ của arbitration và không phải bằng chứng để tự động bật override neural.
 
 ### 4.4 G07
 
