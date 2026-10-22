@@ -54,6 +54,57 @@ PHASE_FIELDS = (
     "attributes",
 )
 
+# Only direct directional opposites participate. The first non-overlapping run
+# is the performed action; a following opposite run is its return. Repetition
+# restarts the cycle, so down-up-down keeps both down runs active.
+DIRECTIONAL_OPPOSITES = {
+    "hand_moves_up": "hand_moves_down", "hand_moves_down": "hand_moves_up",
+    "hand_moves_left": "hand_moves_right", "hand_moves_right": "hand_moves_left",
+    "hand_moves_diagonal_up_left": "hand_moves_diagonal_down_right",
+    "hand_moves_diagonal_down_right": "hand_moves_diagonal_up_left",
+    "hand_moves_diagonal_up_right": "hand_moves_diagonal_down_left",
+    "hand_moves_diagonal_down_left": "hand_moves_diagonal_up_right",
+    "index_finger_moves_up": "index_finger_moves_down", "index_finger_moves_down": "index_finger_moves_up",
+    "index_finger_moves_left": "index_finger_moves_right", "index_finger_moves_right": "index_finger_moves_left",
+    "index_finger_moves_diagonal_up_left": "index_finger_moves_diagonal_down_right",
+    "index_finger_moves_diagonal_down_right": "index_finger_moves_diagonal_up_left",
+    "index_finger_moves_diagonal_up_right": "index_finger_moves_diagonal_down_left",
+    "index_finger_moves_diagonal_down_left": "index_finger_moves_diagonal_up_right",
+    "middle_finger_moves_up": "middle_finger_moves_down", "middle_finger_moves_down": "middle_finger_moves_up",
+    "thumb_moves_up": "thumb_moves_down", "thumb_moves_down": "thumb_moves_up",
+    "pinch_distance_increasing": "pinch_distance_decreasing", "pinch_distance_decreasing": "pinch_distance_increasing",
+    "fingers_spread_increasing": "fingers_spread_decreasing", "fingers_spread_decreasing": "fingers_spread_increasing",
+    "hands_move_apart_horizontal": "hands_move_together_horizontal",
+    "hands_move_together_horizontal": "hands_move_apart_horizontal",
+    "hands_move_same_direction_horizontal": "hands_move_opposite_direction_horizontal",
+    "hands_move_opposite_direction_horizontal": "hands_move_same_direction_horizontal",
+    "hands_move_same_direction_vertical": "hands_move_opposite_direction_vertical",
+    "hands_move_opposite_direction_vertical": "hands_move_same_direction_vertical",
+}
+
+
+def classify_action_roles(atomic_events: list[dict]) -> None:
+    """Annotate clear directional reversals without changing atomic identity."""
+    by_subject_and_family = defaultdict(list)
+    for event in atomic_events:
+        name = event.get("predicate_name")
+        if name in DIRECTIONAL_OPPOSITES:
+            family = tuple(sorted((name, DIRECTIONAL_OPPOSITES[name])))
+            by_subject_and_family[(event["subject"], family)].append(event)
+    for events in by_subject_and_family.values():
+        events.sort(key=lambda item: (item["start_frame"], item["end_frame"], item["atomic_event_id"]))
+        for event in events:
+            event["action_role"] = "active"
+        for current, following in zip(events, events[1:]):
+            if current["end_frame"] >= following["start_frame"]:
+                current["action_role"] = "ambiguous"
+                following["action_role"] = "ambiguous"
+                continue
+            if DIRECTIONAL_OPPOSITES.get(current["predicate_name"]) == following["predicate_name"]:
+                following["action_role"] = (
+                    "return" if current["action_role"] == "active" else "active"
+                )
+
 
 def build_atomic_events(data: dict, max_gap: int, min_confidence: float) -> list[dict]:
     groups = defaultdict(list)
@@ -76,6 +127,7 @@ def build_atomic_events(data: dict, max_gap: int, min_confidence: float) -> list
     filtered.sort(key=lambda e: (e["start_frame"], e["end_frame"], e["predicate_name"], e["subject"]))
     for idx, event in enumerate(filtered, start=1):
         event["atomic_event_id"] = f"atomic_event_{idx:06d}"
+    classify_action_roles(filtered)
     return filtered
 
 
@@ -229,12 +281,15 @@ def make_phase_event(
     total_score = 0.0
     total_overlap = 0.0
     atomic_ids = []
+    concept_action_roles: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
 
     for event, score in active_events:
         name = event["predicate_name"]
         field = composite_field_for(event["category"])
         field_scores.setdefault(field, defaultdict(float))[name] += score
         field_sources.setdefault(field, defaultdict(set))[name].add(event["atomic_event_id"])
+        if event.get("action_role"):
+            concept_action_roles[field][name].add(event["action_role"])
         evidence_keypoints.update(event.get("evidence_keypoints", []))
         atomic_ids.append(event["atomic_event_id"])
         total_score += score
@@ -253,6 +308,10 @@ def make_phase_event(
         for field, names in fields.items()
         if names
     }
+    concept_action_roles_out = {
+        field: {name: sorted(roles) for name, roles in concepts.items() if name in fields.get(field, [])}
+        for field, concepts in concept_action_roles.items()
+    }
 
     if not any(fields.values()):
         return None
@@ -269,13 +328,19 @@ def make_phase_event(
         "evidence_keypoints": sorted(evidence_keypoints),
         "atomic_event_ids": sorted(set(atomic_ids)),
         "concept_atomic_event_ids": concept_atomic_event_ids,
+        "concept_action_roles": concept_action_roles_out,
         "source_atomic_event_count": len(set(atomic_ids)),
         "phase_event": True,
     }
 
 
 def signature(event: dict) -> tuple:
-    return tuple((field, tuple(event.get(field, []))) for field in PHASE_FIELDS)
+    semantic = tuple((field, tuple(event.get(field, []))) for field in PHASE_FIELDS)
+    roles = tuple(
+        (field, tuple((name, tuple(values)) for name, values in sorted(concepts.items())))
+        for field, concepts in sorted(event.get("concept_action_roles", {}).items())
+    )
+    return semantic, roles
 
 
 def merge_adjacent_phase_events(events: list[dict], max_phase_duration: int) -> list[dict]:
@@ -321,6 +386,11 @@ def merge_adjacent_phase_events(events: list[dict], max_phase_duration: int) -> 
                 field_sources[name] = sorted(
                     set(field_sources.get(name, [])) | set(atomic_event_ids)
                 )
+        merged_roles = current.setdefault("concept_action_roles", {})
+        for field, concepts in event.get("concept_action_roles", {}).items():
+            field_roles = merged_roles.setdefault(field, {})
+            for name, roles in concepts.items():
+                field_roles[name] = sorted(set(field_roles.get(name, [])) | set(roles))
     merged.append(current)
     for idx, event in enumerate(merged, start=1):
         event["event_id"] = f"event_{idx:06d}"
@@ -409,7 +479,8 @@ def build_events_phase_v2(
             "min_overlap_ratio": min_overlap_ratio,
             "min_overlap_frames": min_overlap_frames,
             "merge_adjacent": merge_adjacent,
-            "builder": "phase_v2",
+            "builder": "phase_v3_action_roles",
+            "action_role_algorithm": "directional_reversal_v1",
             "predicate_config": data.get("predicate_config", {}),
         },
     }

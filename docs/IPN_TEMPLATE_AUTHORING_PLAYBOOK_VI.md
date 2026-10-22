@@ -87,7 +87,7 @@ Các giới hạn của matcher phải nhớ khi viết template:
 - Occurrence dựa trên merge và dedup event; hai click sát nhau có thể bị gộp.
 - Shape là tín hiệu theo frame, motion cần một cửa sổ dài hơn; hai dấu hiệu đúng có thể nằm ở hai phase kề nhau.
 - Sequence matching hiện mang tính greedy và chưa tối ưu trực tiếp toàn bộ ràng buộc `BEFORE`.
-- Chưa có bước chọn dominant hand/active phase rõ ràng.
+- Matcher từ revision `phase_v3_action_roles` đã gắn vai trò `active`, `return`, `ambiguous` cho directional run theo từng subject/family. Template hành động chỉ dùng motion có vai trò `active`; run đảo chiều kế tiếp bị coi là pha trả về. Đây là heuristic bảo thủ theo thứ tự thời gian, chưa dùng magnitude, nên phase chồng lấn được đánh dấu `ambiguous` và không được dùng để override.
 - `kg_logits` của mô hình V4 không phải điểm symbolic thuần vì nhánh đó có attention tới neural memory. Override hậu xử lý phải dùng evidence từ template matcher.
 
 ## 4. Quy trình authoring cho từng cặp
@@ -119,6 +119,8 @@ Chỉ override khi tồn tại một chiều pinch trội trong active interval:
 - cả hai chiều cùng mạnh, net change nhỏ hoặc nhiễu lớn: không override.
 
 Negative evidence chiều ngược không nên lấy từ toàn clip; cần giới hạn vào matched interval trước khi dùng mạnh.
+
+Matcher hiện xuất `active_intervals` cho template có `action_role: active`. Arbitration G10/G11 phải từ chối nếu cả hai chiều đều có active interval hoặc nếu không có active interval rõ ràng; không được suy diễn từ evidence `return`.
 
 ### 4.4 G07
 
@@ -152,6 +154,8 @@ Ngoài accuracy và Macro-F1, mỗi vòng phải có:
 - precision của các override;
 - số override đúng, sai và không quyết định được theo từng cặp;
 - log cho từng override: neural top-2, margin, symbolic scores, required-hit ratio, temporal score, occurrence count, negative hits, matched event IDs và lý do.
+
+Script `scripts/eval_ipn_pair_arbitration.py` thực thi đúng contract này cho ba cặp G01/G08, G02/G09 và G10/G11. Mặc định script chỉ audit. Cờ `--enable-override` chỉ dùng để mô phỏng trên validation và bắt buộc truyền `--max-neural-margin`; notebook chính không bật override.
 
 Một template có thể tăng recall nhưng gây nhiều override sai. Vì vậy mục tiêu “template giúp 10–15%” phải được định nghĩa rõ là tăng bao nhiêu điểm F1 trên lớp yếu hoặc giảm bao nhiêu lỗi trong cặp, không mặc định là tăng 10–15 điểm accuracy toàn bộ hệ thống.
 

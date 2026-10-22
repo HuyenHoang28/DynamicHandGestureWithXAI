@@ -82,7 +82,7 @@ def parse_template_yaml(path: Path) -> dict:
             raise ValueError(f"{canonical} must be a finite number")
         matching[canonical] = value
 
-    allowed_event_keys = {"subject", "min_occurrences", "max_occurrences", *FIELD_TO_NODE_TYPE_AND_RELATION}
+    allowed_event_keys = {"subject", "min_occurrences", "max_occurrences", "action_role", *FIELD_TO_NODE_TYPE_AND_RELATION}
     for label, gesture in gestures.items():
         if not isinstance(gesture, dict):
             raise ValueError(f"Gesture {label} must be a mapping")
@@ -96,6 +96,9 @@ def parse_template_yaml(path: Path) -> dict:
             if unknown:
                 raise ValueError(f"Gesture {label} event {event_index} has unsupported keys: {sorted(unknown)}")
             event.setdefault("subject", "any")
+            event.setdefault("action_role", "any")
+            if not isinstance(event["action_role"], str) or event["action_role"] not in {"any", "active", "return"}:
+                raise ValueError(f"Gesture {label} event {event_index} action_role must be any, active, or return")
             min_occurrences = event.get("min_occurrences", 1)
             if isinstance(min_occurrences, bool):
                 raise ValueError(f"Gesture {label} event {event_index} min_occurrences must be an integer")
@@ -243,6 +246,7 @@ def build_template_graph(
                 "ordinal": idx,
                 "min_occurrences": int(event_template.get("min_occurrences", 1)),
                 "max_occurrences": event_template.get("max_occurrences"),
+                "action_role": event_template.get("action_role", "any"),
             },
         )
         add_edge(

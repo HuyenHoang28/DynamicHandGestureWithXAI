@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "final" / "code"))
 
 from src_neurosymbolic.kg.build_template_graph import build_template_graph, parse_template_yaml
-from src_neurosymbolic.events.build_events_phase_v2 import build_events_phase_v2
+from src_neurosymbolic.events.build_events_phase_v2 import build_events_phase_v2, classify_action_roles
 from src_neurosymbolic.kg.build_instance_graph_phase_v2 import build_instance_graph_phase_v2
 from src_neurosymbolic.kg.graph_matching import score_template
 
@@ -74,6 +74,77 @@ def add_event_fact(
 
 
 class SymbolicTemplateV2Tests(unittest.TestCase):
+    def test_directional_triplet_marks_two_active_runs_and_preserves_atomic_ids(self) -> None:
+        runs = [
+            {"atomic_event_id": "atomic_event_000001", "subject": "right_hand", "predicate_name": "hand_moves_down", "start_frame": 0, "end_frame": 4},
+            {"atomic_event_id": "atomic_event_000002", "subject": "right_hand", "predicate_name": "hand_moves_up", "start_frame": 6, "end_frame": 10},
+            {"atomic_event_id": "atomic_event_000003", "subject": "right_hand", "predicate_name": "hand_moves_down", "start_frame": 12, "end_frame": 16},
+        ]
+        classify_action_roles(runs)
+        self.assertEqual([run["action_role"] for run in runs], ["active", "return", "active"])
+        self.assertEqual([run["atomic_event_id"] for run in runs], [
+            "atomic_event_000001", "atomic_event_000002", "atomic_event_000003"
+        ])
+
+    def test_isolated_directional_run_is_active_and_overlap_is_ambiguous(self) -> None:
+        isolated = [{"atomic_event_id": "one", "subject": "right_hand", "predicate_name": "pinch_distance_decreasing", "start_frame": 0, "end_frame": 4}]
+        classify_action_roles(isolated)
+        self.assertEqual(isolated[0]["action_role"], "active")
+        overlapping = [
+            {"atomic_event_id": "up", "subject": "right_hand", "predicate_name": "hand_moves_up", "start_frame": 0, "end_frame": 5},
+            {"atomic_event_id": "down", "subject": "right_hand", "predicate_name": "hand_moves_down", "start_frame": 5, "end_frame": 9},
+        ]
+        classify_action_roles(overlapping)
+        self.assertEqual([item["action_role"] for item in overlapping], ["ambiguous", "ambiguous"])
+
+    def test_pinch_return_does_not_match_active_template_but_legacy_any_does(self) -> None:
+        pinch_runs = [
+            {"atomic_event_id": "pinch_1", "subject": "right_hand", "predicate_name": "pinch_distance_increasing", "start_frame": 0, "end_frame": 4},
+            {"atomic_event_id": "pinch_2", "subject": "right_hand", "predicate_name": "pinch_distance_decreasing", "start_frame": 6, "end_frame": 10},
+        ]
+        classify_action_roles(pinch_runs)
+        self.assertEqual([run["action_role"] for run in pinch_runs], ["active", "return"])
+        active_template = build_template_graph(
+            "G10", 10,
+            {"description": "", "notes": [], "expected_events": [
+                {**event_template("pinch_distance_decreasing"), "action_role": "active"}
+            ], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        legacy_template = build_template_graph(
+            "legacy", 10,
+            {"description": "", "notes": [], "expected_events": [event_template("pinch_distance_decreasing")], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        returning_instance = instance_graph(["pinch_distance_decreasing"])
+        for edge in returning_instance["edges"]:
+            edge["properties"]["action_roles"] = ["return"]
+        self.assertEqual(score_template(returning_instance, active_template)["score"], 0.0)
+        self.assertGreater(score_template(returning_instance, legacy_template)["score"], 0.0)
+
+    def test_instance_graph_does_not_claim_action_role_builder_when_metadata_missing(self) -> None:
+        graph = build_instance_graph_phase_v2({"video_id": "legacy", "events": []})
+        self.assertEqual(graph["summary"]["event_builder"], "unknown")
+        video = next(node for node in graph["nodes"] if node["type"] == "Video")
+        self.assertEqual(video["properties"]["event_builder"], "unknown")
+
+    def test_template_parser_rejects_unknown_action_role_and_defaults_legacy_to_any(self) -> None:
+        def parse(role: str | None) -> dict:
+            role_line = f"        action_role: {role}\n" if role is not None else ""
+            yaml_text = (
+                "version: 2\ngestures:\n  G01:\n    expected_events:\n"
+                "      - subject: any\n" + role_line
+                + "        finger_motions:\n          required: [click]\n"
+            )
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "templates.yaml"
+                path.write_text(yaml_text, encoding="utf-8")
+                return parse_template_yaml(path)
+
+        self.assertEqual(parse(None)["gestures"]["G01"]["expected_events"][0]["action_role"], "any")
+        with self.assertRaisesRegex(ValueError, "action_role"):
+            parse("sometimes")
+
     def test_yaml_weights_are_applied_and_validated(self) -> None:
         yaml_text = """
 version: 2

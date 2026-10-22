@@ -173,7 +173,8 @@ def precompute_split(
         "schema_version": 2,
         "predicate_config": expected_predicate_config,
         "event_config": {
-            "builder": "phase_v2",
+            "builder": "phase_v3_action_roles",
+            "action_role_algorithm": "directional_reversal_v1",
             "max_gap": 2,
             "min_confidence": 0.3,
             "max_phase_duration": max_phase_duration,
@@ -265,7 +266,7 @@ def precompute_split(
                 instance_graph["provenance"] = {
                     "predicate_config": predicate_config,
                     "trend_consistency": predicate_config.get("trend_consistency"),
-                    "event_builder": "phase_v2",
+                    "event_builder": "phase_v3_action_roles",
                     "build_config": build_config,
                     "source_fingerprint": source_fingerprint,
                 }

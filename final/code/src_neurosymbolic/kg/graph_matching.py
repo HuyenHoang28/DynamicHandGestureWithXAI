@@ -13,6 +13,7 @@ CONCEPT_RELATIONS = {
     "HAS_SWEEP",
     "HAS_JOINT_ANGLE",
 }
+ACTION_ROLE_RELATIONS = {"HAS_MOTION", "HAS_FINGER_MOTION", "HAS_COORDINATION", "HAS_SWEEP"}
 
 
 def load_json(path: Path) -> dict:
@@ -107,6 +108,7 @@ def template_requirements(graph: dict) -> list[dict]:
             continue
         event_id = edge["source"]
         subject = subjects.get(event_id, "any")
+        event_props = nodes.get(event_id, {}).get("properties", {})
         concept = node_name(nodes, edge["target"])
         requirements.append(
             {
@@ -116,6 +118,7 @@ def template_requirements(graph: dict) -> list[dict]:
                 "concept": concept,
                 "level": level,
                 "weight": float(props.get("weight", 0.0)),
+                "action_role": event_props.get("action_role", "any"),
                 "fact": (subject, relation, concept),
             }
         )
@@ -171,6 +174,7 @@ def instance_event_records(graph: dict) -> list[dict]:
             "confidence": float(props.get("confidence", 1.0)),
             "facts": set(),
             "fact_occurrence_ids": {},
+            "fact_action_roles": {},
             "fact_strengths": {},
             "atomic_event_ids": tuple(sorted(set(props.get("atomic_event_ids") or []))),
             "event_ids": [node["id"]],
@@ -190,6 +194,9 @@ def instance_event_records(graph: dict) -> list[dict]:
         occurrence_ids = set(record["fact_occurrence_ids"].get(fact, ()))
         occurrence_ids.update(atomic_event_ids or ())
         record["fact_occurrence_ids"][fact] = tuple(sorted(occurrence_ids))
+        roles = edge.get("properties", {}).get("action_roles")
+        if roles:
+            record["fact_action_roles"][fact] = tuple(sorted(set(roles)))
 
         event_node = nodes.get(record["event_id"], {})
         event_props = event_node.get("properties", {})
@@ -230,6 +237,7 @@ def template_event_groups(graph: dict) -> list[dict]:
                 else None
             ),
             "requirements": [],
+            "action_role": props.get("action_role", "any"),
         }
     for requirement in template_requirements(graph):
         group = groups.get(requirement["template_event"])
@@ -252,6 +260,16 @@ def event_satisfies_template(instance_event: dict, template_event: dict) -> bool
             for _, fact_relation, fact_concept in facts
         ):
             return False
+        if (
+            template_event.get("action_role", "any") != "any"
+            and relation in ACTION_ROLE_RELATIONS
+            and requirement.get("action_role", "any") != "any"
+        ):
+            roles = instance_event.get("fact_action_roles", {}).get(
+                (instance_event["subject"], relation, concept), ()
+            )
+            if template_event["action_role"] not in roles:
+                return False
     return True
 
 
@@ -290,9 +308,17 @@ def _record_matches_requirement(instance_event: dict, requirement: dict) -> bool
     subject, relation, concept = requirement["fact"]
     if subject != "any" and subject != instance_event["subject"]:
         return False
-    return any(
+    fact_match = any(
         fact_relation == relation and fact_concept == concept
         for _, fact_relation, fact_concept in instance_event.get("facts", ())
+    )
+    if not fact_match:
+        return False
+    role = requirement.get("action_role", "any")
+    if role == "any" or relation not in ACTION_ROLE_RELATIONS:
+        return True
+    return role in instance_event.get("fact_action_roles", {}).get(
+        (instance_event["subject"], relation, concept), ()
     )
 
 
@@ -409,6 +435,11 @@ def _merge_event_records(first: dict, second: dict) -> dict:
         )
         for fact in set(first.get("fact_strengths", {}))
         | set(second.get("fact_strengths", {}))
+    }
+    merged["fact_action_roles"] = {
+        fact: tuple(sorted(set(first.get("fact_action_roles", {}).get(fact, ()))
+                           | set(second.get("fact_action_roles", {}).get(fact, ()))))
+        for fact in set(first.get("fact_action_roles", {})) | set(second.get("fact_action_roles", {}))
     }
     merged["atomic_event_ids"] = tuple(
         sorted(_record_atomic_ids(first) | _record_atomic_ids(second))
@@ -778,6 +809,7 @@ def _score_template_v2(
     matched = []
     missing_required = []
     negative_hits = []
+    active_intervals = []
 
     for template_event in template_events:
         event_requirements = [
@@ -792,6 +824,17 @@ def _score_template_v2(
             event_missing_required = [
                 req for req in event_requirements if req["level"] == "required"
             ]
+        elif template_event.get("action_role") == "active" and not event_missing_required:
+            active_intervals.append(
+                {
+                    "template_event": template_event["event_id"],
+                    "subject": best["subject"],
+                    "start_frame": int(best["start_frame"]),
+                    "end_frame": int(best["end_frame"]),
+                    "instance_events": list(best.get("event_ids", [best["event_id"]])),
+                    "atomic_event_ids": sorted(_record_atomic_ids(best)),
+                }
+            )
         for req in event_matched:
             strength = _record_requirement_strength(best, req)
             positive_score += req["weight"] * strength
@@ -846,6 +889,7 @@ def _score_template_v2(
         "matched": serialize_requirements(matched),
         "missing_required": serialize_requirements(missing_required),
         "negative_hits": serialize_requirements(negative_hits),
+        "active_intervals": active_intervals,
         "temporal_score": round(float(temporal["score"]), 6),
         "matched_events": temporal["matched_events"],
         "required_events": temporal["required_events"],

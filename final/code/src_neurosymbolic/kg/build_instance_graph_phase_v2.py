@@ -24,7 +24,7 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
         {
             "video_id": video_id,
             "source_path": data.get("source_path", ""),
-            "event_builder": data.get("summary", {}).get("builder", "phase_v2"),
+            "event_builder": data.get("summary", {}).get("builder", "unknown"),
         },
     )
 
@@ -73,6 +73,8 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
                         "atomic_event_ids": event.get("concept_atomic_event_ids", {})
                         .get(field, {})
                         .get(value, []),
+                        **({"action_roles": event["concept_action_roles"][field][value]}
+                           if value in event.get("concept_action_roles", {}).get(field, {}) else {}),
                     },
                 )
 
@@ -106,7 +108,7 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
             "event_count": len(events),
             "node_count": len(nodes),
             "edge_count": len(edges),
-            "event_builder": data.get("summary", {}).get("builder", "phase_v2"),
+            "event_builder": data.get("summary", {}).get("builder", "unknown"),
             "temporal_scope": "per_subject",
             "predicate_config": data.get("predicate_config", {}),
         },
