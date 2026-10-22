@@ -82,6 +82,8 @@ DIRECTIONAL_OPPOSITES = {
     "hands_move_opposite_direction_vertical": "hands_move_same_direction_vertical",
 }
 
+ACTION_ROLE_CENTER_TOLERANCE = 1
+
 
 def classify_action_roles(atomic_events: list[dict]) -> None:
     """Annotate clear directional reversals without changing atomic identity."""
@@ -92,18 +94,32 @@ def classify_action_roles(atomic_events: list[dict]) -> None:
             family = tuple(sorted((name, DIRECTIONAL_OPPOSITES[name])))
             by_subject_and_family[(event["subject"], family)].append(event)
     for events in by_subject_and_family.values():
-        events.sort(key=lambda item: (item["start_frame"], item["end_frame"], item["atomic_event_id"]))
+        events.sort(
+            key=lambda item: (
+                int(item["start_frame"]) + int(item["end_frame"]),
+                item["start_frame"],
+                item["end_frame"],
+                item["atomic_event_id"],
+            )
+        )
         for event in events:
             event["action_role"] = "active"
         for current, following in zip(events, events[1:]):
-            if current["end_frame"] >= following["start_frame"]:
+            current_center = (int(current["start_frame"]) + int(current["end_frame"])) / 2
+            following_center = (int(following["start_frame"]) + int(following["end_frame"])) / 2
+            are_opposites = (
+                DIRECTIONAL_OPPOSITES.get(current["predicate_name"])
+                == following["predicate_name"]
+            )
+            if not are_opposites:
+                continue
+            if abs(current_center - following_center) <= ACTION_ROLE_CENTER_TOLERANCE:
                 current["action_role"] = "ambiguous"
                 following["action_role"] = "ambiguous"
                 continue
-            if DIRECTIONAL_OPPOSITES.get(current["predicate_name"]) == following["predicate_name"]:
-                following["action_role"] = (
-                    "return" if current["action_role"] == "active" else "active"
-                )
+            following["action_role"] = (
+                "return" if current["action_role"] == "active" else "active"
+            )
 
 
 def build_atomic_events(data: dict, max_gap: int, min_confidence: float) -> list[dict]:
@@ -479,8 +495,8 @@ def build_events_phase_v2(
             "min_overlap_ratio": min_overlap_ratio,
             "min_overlap_frames": min_overlap_frames,
             "merge_adjacent": merge_adjacent,
-            "builder": "phase_v3_action_roles",
-            "action_role_algorithm": "directional_reversal_v1",
+            "builder": "phase_v4_action_role_audit",
+            "action_role_algorithm": "directional_reversal_v2",
             "predicate_config": data.get("predicate_config", {}),
         },
     }

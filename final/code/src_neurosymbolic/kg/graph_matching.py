@@ -681,6 +681,39 @@ def _best_template_event_candidate(
     return best, matched, missing_required
 
 
+def _candidate_role_diagnostics(
+    candidate: dict,
+    event_requirements: list[dict],
+) -> set[str]:
+    """Return shared roles for a complete required directional conjunction.
+
+    Diagnostics ignore the template's hard role filter. This lets templates
+    keep ``action_role: any`` for recall while arbitration inspects every
+    qualifying active/return episode independently.
+    """
+    required = [req for req in event_requirements if req["level"] == "required"]
+    role_agnostic = [{**req, "action_role": "any"} for req in required]
+    if not required or not all(
+        _record_matches_requirement(candidate, req) for req in role_agnostic
+    ):
+        return set()
+    directional = [
+        req for req in role_agnostic if req["fact"][1] in ACTION_ROLE_RELATIONS
+    ]
+    if not directional:
+        return set()
+    role_sets = []
+    for req in directional:
+        roles = set()
+        for fact in _record_matching_facts(candidate, req):
+            roles.update(candidate.get("fact_action_roles", {}).get(fact, ()))
+        if not roles:
+            return {"unknown"}
+        role_sets.append(roles)
+    shared = set.intersection(*role_sets)
+    return shared or {"ambiguous"}
+
+
 def temporal_template_score(instance_graph: dict, template_graph: dict) -> dict:
     template_events = template_event_groups(template_graph)
     instance_events = instance_event_records(instance_graph)
@@ -809,13 +842,33 @@ def _score_template_v2(
     matched = []
     missing_required = []
     negative_hits = []
-    active_intervals = []
+    role_intervals = {"active": [], "return": [], "ambiguous": [], "unknown": []}
 
     for template_event in template_events:
         event_requirements = [
             req for req in requirements if req["template_event"] == template_event["event_id"]
         ]
         candidates = template_event_episodes(instance_events, template_event)
+        seen_role_intervals = set()
+        for candidate in candidates:
+            interval = {
+                "template_event": template_event["event_id"],
+                "subject": candidate["subject"],
+                "start_frame": int(candidate["start_frame"]),
+                "end_frame": int(candidate["end_frame"]),
+                "instance_events": list(candidate.get("event_ids", [candidate["event_id"]])),
+                "atomic_event_ids": sorted(_record_atomic_ids(candidate)),
+            }
+            interval_key = (
+                interval["template_event"], interval["subject"],
+                interval["start_frame"], interval["end_frame"],
+                tuple(interval["instance_events"]), tuple(interval["atomic_event_ids"]),
+            )
+            for role in _candidate_role_diagnostics(candidate, event_requirements):
+                marker = (role, interval_key)
+                if role in role_intervals and marker not in seen_role_intervals:
+                    role_intervals[role].append(interval)
+                    seen_role_intervals.add(marker)
         best, event_matched, event_missing_required = _best_template_event_candidate(
             candidates,
             template_event,
@@ -824,17 +877,6 @@ def _score_template_v2(
             event_missing_required = [
                 req for req in event_requirements if req["level"] == "required"
             ]
-        elif template_event.get("action_role") == "active" and not event_missing_required:
-            active_intervals.append(
-                {
-                    "template_event": template_event["event_id"],
-                    "subject": best["subject"],
-                    "start_frame": int(best["start_frame"]),
-                    "end_frame": int(best["end_frame"]),
-                    "instance_events": list(best.get("event_ids", [best["event_id"]])),
-                    "atomic_event_ids": sorted(_record_atomic_ids(best)),
-                }
-            )
         for req in event_matched:
             strength = _record_requirement_strength(best, req)
             positive_score += req["weight"] * strength
@@ -889,7 +931,8 @@ def _score_template_v2(
         "matched": serialize_requirements(matched),
         "missing_required": serialize_requirements(missing_required),
         "negative_hits": serialize_requirements(negative_hits),
-        "active_intervals": active_intervals,
+        "role_intervals": role_intervals,
+        "active_intervals": role_intervals["active"],
         "temporal_score": round(float(temporal["score"]), 6),
         "matched_events": temporal["matched_events"],
         "required_events": temporal["required_events"],

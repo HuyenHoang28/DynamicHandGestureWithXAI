@@ -44,7 +44,6 @@ gestures:
     description: Click with one finger - index finger extended, taps down once
     expected_events:
       - subject: any
-        action_role: active
         min_occurrences: 1
         max_occurrences: 1
         hand_shapes:
@@ -63,7 +62,6 @@ gestures:
     description: Click with two fingers - index and middle fingers extended, tap down once
     expected_events:
       - subject: any
-        action_role: active
         min_occurrences: 1
         max_occurrences: 1
         hand_shapes:
@@ -83,7 +81,6 @@ gestures:
     description: Throw up - hand moves quickly upward
     expected_events:
       - subject: any
-        action_role: active
         motions:
           required:
             - hand_moves_up
@@ -99,7 +96,6 @@ gestures:
     description: Throw down - hand moves quickly downward
     expected_events:
       - subject: any
-        action_role: active
         motions:
           required:
             - hand_moves_down
@@ -115,7 +111,6 @@ gestures:
     description: Throw left from the performer's perspective - motion goes right in image coordinates
     expected_events:
       - subject: any
-        action_role: active
         motions:
           required:
             - hand_moves_right
@@ -127,12 +122,11 @@ gestures:
     negative_evidence: {}
     notes:
       - Da doi chieu theo toa do anh sau khi xem clip train va validation: trai cua nguoi thuc hien la phai tren anh.
-      - Fast motion chi cong diem khi dong thoi voi direction trong active episode.
+      - Fast motion chi cong diem khi dong thoi voi direction trong episode duoc matcher chon; action role chi dung de audit.
   G06:
     description: Throw right from the performer's perspective - motion goes left in image coordinates
     expected_events:
       - subject: any
-        action_role: active
         motions:
           required:
             - hand_moves_left
@@ -144,7 +138,7 @@ gestures:
     negative_evidence: {}
     notes:
       - Da doi chieu theo toa do anh sau khi xem clip train va validation: phai cua nguoi thuc hien la trai tren anh.
-      - Fast motion chi cong diem khi dong thoi voi direction trong active episode.
+      - Fast motion chi cong diem khi dong thoi voi direction trong episode duoc matcher chon; action role chi dung de audit.
   G07:
     description: Open twice - hand goes from closed to open, repeated two times
     expected_events:
@@ -183,7 +177,6 @@ gestures:
     description: Double click with one finger - index finger taps down twice
     expected_events:
       - subject: any
-        action_role: active
         min_occurrences: 2
         max_occurrences: 2
         hand_shapes:
@@ -202,7 +195,6 @@ gestures:
     description: Double click with two fingers - index and middle fingers tap down twice
     expected_events:
       - subject: any
-        action_role: active
         min_occurrences: 2
         max_occurrences: 2
         hand_shapes:
@@ -222,7 +214,6 @@ gestures:
     description: Zoom in - fingers spread apart from a pinched pose
     expected_events:
       - subject: any
-        action_role: active
         finger_motions:
           required:
             - pinch_distance_increasing
@@ -234,12 +225,11 @@ gestures:
     negative_evidence: {}
     notes:
       - Da xac nhan tren clip train va validation: zoom in mo khoang cach ngon cai-ngon tro.
-      - Spread cung chieu chi cong diem khi nam trong active episode; khong phat chieu nguoc o pha tra tay.
+      - Spread cung chieu chi cong diem khi nam trong episode duoc matcher chon; active/return duoc log rieng cho arbitration.
   G11:
     description: Zoom out - fingers move together into a pinched pose
     expected_events:
       - subject: any
-        action_role: active
         finger_motions:
           required:
             - pinch_distance_decreasing
@@ -251,4 +241,4 @@ gestures:
     negative_evidence: {}
     notes:
       - Da xac nhan tren clip train va validation: zoom out thu khoang cach ngon cai-ngon tro.
-      - Spread cung chieu chi cong diem khi nam trong active episode; khong phat chieu nguoc o pha tra tay.
+      - Spread cung chieu chi cong diem khi nam trong episode duoc matcher chon; active/return duoc log rieng cho arbitration.

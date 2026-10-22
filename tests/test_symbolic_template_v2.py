@@ -86,16 +86,32 @@ class SymbolicTemplateV2Tests(unittest.TestCase):
             "atomic_event_000001", "atomic_event_000002", "atomic_event_000003"
         ])
 
-    def test_isolated_directional_run_is_active_and_overlap_is_ambiguous(self) -> None:
+    def test_isolated_and_ordered_overlapping_directional_runs_keep_roles(self) -> None:
         isolated = [{"atomic_event_id": "one", "subject": "right_hand", "predicate_name": "pinch_distance_decreasing", "start_frame": 0, "end_frame": 4}]
         classify_action_roles(isolated)
         self.assertEqual(isolated[0]["action_role"], "active")
         overlapping = [
             {"atomic_event_id": "up", "subject": "right_hand", "predicate_name": "hand_moves_up", "start_frame": 0, "end_frame": 5},
-            {"atomic_event_id": "down", "subject": "right_hand", "predicate_name": "hand_moves_down", "start_frame": 5, "end_frame": 9},
+            {"atomic_event_id": "down", "subject": "right_hand", "predicate_name": "hand_moves_down", "start_frame": 4, "end_frame": 10},
+        ]
+        classify_action_roles(overlapping)
+        self.assertEqual([item["action_role"] for item in overlapping], ["active", "return"])
+
+    def test_near_simultaneous_opposite_directional_runs_are_ambiguous(self) -> None:
+        overlapping = [
+            {"atomic_event_id": "up", "subject": "right_hand", "predicate_name": "hand_moves_up", "start_frame": 0, "end_frame": 6},
+            {"atomic_event_id": "down", "subject": "right_hand", "predicate_name": "hand_moves_down", "start_frame": 1, "end_frame": 7},
         ]
         classify_action_roles(overlapping)
         self.assertEqual([item["action_role"] for item in overlapping], ["ambiguous", "ambiguous"])
+
+    def test_near_simultaneous_same_directional_runs_remain_active(self) -> None:
+        repeated = [
+            {"atomic_event_id": "down-1", "subject": "right_hand", "predicate_name": "index_finger_moves_down", "start_frame": 0, "end_frame": 6},
+            {"atomic_event_id": "down-2", "subject": "right_hand", "predicate_name": "index_finger_moves_down", "start_frame": 1, "end_frame": 7},
+        ]
+        classify_action_roles(repeated)
+        self.assertEqual([item["action_role"] for item in repeated], ["active", "active"])
 
     def test_pinch_return_does_not_match_active_template_but_legacy_any_does(self) -> None:
         pinch_runs = [
@@ -117,16 +133,42 @@ class SymbolicTemplateV2Tests(unittest.TestCase):
             WEIGHTS,
         )
         returning_instance = instance_graph(["pinch_distance_decreasing"])
+        unknown_score = score_template(returning_instance, legacy_template)
+        self.assertEqual(len(unknown_score["role_intervals"]["unknown"]), 1)
         for edge in returning_instance["edges"]:
             edge["properties"]["action_roles"] = ["return"]
         self.assertEqual(score_template(returning_instance, active_template)["score"], 0.0)
-        self.assertGreater(score_template(returning_instance, legacy_template)["score"], 0.0)
+        legacy_score = score_template(returning_instance, legacy_template)
+        self.assertGreater(legacy_score["score"], 0.0)
+        self.assertEqual(len(legacy_score["role_intervals"]["return"]), 1)
+        self.assertEqual(legacy_score["role_intervals"]["active"], [])
+        self.assertIs(legacy_score["active_intervals"], legacy_score["role_intervals"]["active"])
+        for edge in returning_instance["edges"]:
+            edge["properties"]["action_roles"] = ["active"]
+        active_score = score_template(returning_instance, legacy_template)
+        self.assertEqual(len(active_score["role_intervals"]["active"]), 1)
+        self.assertIs(active_score["active_intervals"], active_score["role_intervals"]["active"])
 
     def test_instance_graph_does_not_claim_action_role_builder_when_metadata_missing(self) -> None:
         graph = build_instance_graph_phase_v2({"video_id": "legacy", "events": []})
         self.assertEqual(graph["summary"]["event_builder"], "unknown")
         video = next(node for node in graph["nodes"] if node["type"] == "Video")
         self.assertEqual(video["properties"]["event_builder"], "unknown")
+
+    def test_role_diagnostics_include_all_qualifying_episodes_not_only_best(self) -> None:
+        template = build_template_graph(
+            "G10", 11,
+            {"description": "", "notes": [], "expected_events": [
+                event_template("pinch_distance_increasing")
+            ], "negative_evidence": {}},
+            WEIGHTS,
+        )
+        graph = instance_graph(["pinch_distance_increasing", "pinch_distance_increasing"])
+        graph["edges"][0]["properties"]["action_roles"] = ["active"]
+        graph["edges"][1]["properties"]["action_roles"] = ["return"]
+        result = score_template(graph, template)
+        self.assertEqual(len(result["role_intervals"]["active"]), 1)
+        self.assertEqual(len(result["role_intervals"]["return"]), 1)
 
     def test_template_parser_rejects_unknown_action_role_and_defaults_legacy_to_any(self) -> None:
         def parse(role: str | None) -> dict:

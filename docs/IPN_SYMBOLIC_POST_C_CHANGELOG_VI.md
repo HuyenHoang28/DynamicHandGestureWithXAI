@@ -167,3 +167,22 @@ Thêm `AGENTS.md` ở root. Mọi thay đổi code, config, template, notebook, 
 - Review độc lập đã được xử lý: exact-tie bắt buộc abstain; kiểm tra consistency của neural CSV; phân biệt final đúng/sai với tác động beneficial/harmful/neutral; metadata thiếu dùng `event_builder=unknown` thay vì tự nhận là builder mới.
 - Pair arbitration unit tests: path canonicalization, pair-only margin, global tie independence, occurrence gate, G10/G11 opposite-active rejection, audit-only behavior, explicit override và non-pair hold.
 - Chưa có kết quả validation mới cho graph `phase_v3_action_roles`; cần chạy lại Colab train/val trước khi đánh giá hiệu quả của active-role gate.
+
+---
+
+## Cập nhật 2026-10-22 — sửa regression phát hiện từ artifact 6ef
+
+Phân tích đầy đủ được lưu tại `docs/IPN_SYMBOLIC_6EF_ANALYSIS_VI.md`.
+
+Artifact 6ef chứng minh hard `action_role: active` làm giảm mạnh true-template coverage và pair discrimination: raw Macro-F1 giảm từ `0.08708` xuống `0.06091`; tất cả G01–G11 có thresholded F1 bằng 0. Pairwise audit với neural C đề xuất 2 override và cả 2 đều harmful.
+
+Revision kế tiếp thực hiện:
+
+- trả template hành động về `action_role: any`, để role không còn xóa evidence khỏi classifier;
+- vẫn giữ role trên graph và xuất `role_intervals`/`active_intervals` làm diagnostic cho arbitration;
+- thay rule “có overlap là ambiguous” bằng phân loại dựa trên thứ tự tâm interval; chỉ trường hợp gần như đồng thời mới ambiguous;
+- ambiguity chỉ áp dụng cho hai run đối hướng; hai run cùng hướng gần đồng thời vẫn giữ role active;
+- đổi provenance sang `phase_v4_action_role_audit` / `directional_reversal_v2`, bắt buộc dựng graph mới;
+- tiếp tục giữ pairwise ở `audit_only`, không bật override, không chạy test.
+
+Rescore 589 graph 6ef với hard role gate đã bỏ cho accuracy `0.06621`, Macro-F1 `0.04686`, coverage `0.20713`, selective accuracy `0.31967`; gần như phục hồi mốc 0351 và xác nhận đúng nguyên nhân regression. Full repository suite sau thay đổi: `115 passed`, `3` warning PyTorch đã có sẵn; focused suite sau review fix: `73 passed`.
