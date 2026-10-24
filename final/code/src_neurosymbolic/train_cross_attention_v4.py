@@ -395,6 +395,9 @@ def train(args: argparse.Namespace) -> None:
             layers=args.layers,
             heads=args.heads,
             dropout=args.dropout,
+            use_motion_features=args.neural_motion_features,
+            pooling=args.neural_pooling,
+            hand_features=args.neural_hand_features,
         )
     else:
         model = DualCrossAttentionV4NeuroSymbolicModel(
@@ -409,6 +412,9 @@ def train(args: argparse.Namespace) -> None:
             instance_tokens=args.instance_tokens,
             dropout=args.dropout,
             directed_temporal_edges=args.directed_temporal_edges,
+            use_motion_features=args.neural_motion_features,
+            neural_pooling=args.neural_pooling,
+            hand_features=args.neural_hand_features,
         )
     if args.neural_checkpoint is not None and args.resume is None:
         if hasattr(model, "load_neural_checkpoint"):
@@ -614,6 +620,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--instance-graph-root", type=Path, required=True)
     parser.add_argument("--template-dir", type=Path, default=Path("data/template_graphs"))
     parser.add_argument("--neural-checkpoint", type=Path)
+    parser.add_argument(
+        "--neural-motion-features",
+        action="store_true",
+        help="Neural branch adds velocity (dx, dy); required to load a checkpoint trained with velocity.",
+    )
+    parser.add_argument(
+        "--neural-pooling",
+        choices=["mean", "masked_mean", "attention"],
+        default="mean",
+        help="Neural branch pooling; must match the neural checkpoint it is initialised from.",
+    )
+    parser.add_argument(
+        "--neural-hand-features",
+        action="store_true",
+        help="Neural branch adds scale-invariant finger/pinch geometry (needs a matching checkpoint).",
+    )
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--train-file", type=Path, default=Path("train.txt"))
     parser.add_argument("--val-file", type=Path, default=Path("val.txt"))

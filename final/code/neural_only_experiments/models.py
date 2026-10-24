@@ -3,6 +3,8 @@ import math
 import torch
 from torch import nn
 
+from hand_geometry import HAND_GEOMETRY_DIMS, hand_geometry_inputs
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 512) -> None:
@@ -142,6 +144,7 @@ class NeuralOnlyClassifier(nn.Module):
         dropout: float = 0.1,
         use_motion_features: bool = True,
         pooling: str = "attention",
+        hand_features: bool = False,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -149,9 +152,14 @@ class NeuralOnlyClassifier(nn.Module):
         self.input_dims = input_dims
         self.use_motion_features = use_motion_features
         self.pooling = pooling
+        # Optional scale-invariant finger/pinch geometry (see hand_geometry.py); off keeps old checkpoints loadable.
+        self.hand_features = hand_features
+        if hand_features and num_keypoints != 52:
+            raise ValueError("hand_features needs the 52-keypoint layout")
         feature_dims = input_dims + (2 if use_motion_features else 0)
+        extra_dims = HAND_GEOMETRY_DIMS * 2 if hand_features else 0
         self.input_proj = nn.Sequential(
-            nn.Linear(num_keypoints * feature_dims, d_model),
+            nn.Linear(num_keypoints * feature_dims + extra_dims, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -201,6 +209,8 @@ class NeuralOnlyClassifier(nn.Module):
                 velocity[:, 1:] *= pair_valid.unsqueeze(-1)
             features = torch.cat([keypoints, velocity], dim=-1)
         x = features.reshape(batch, frames, -1)
+        if self.hand_features:
+            x = torch.cat([x, hand_geometry_inputs(keypoints)], dim=-1)
         x = self.input_proj(x)
         tokens = self.encoder(x)
         if self.pooling == "mean":

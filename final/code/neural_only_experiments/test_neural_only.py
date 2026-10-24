@@ -147,6 +147,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
         dropout=model_args.dropout,
         use_motion_features=getattr(model_args, "disable_motion_features", True) is False,
         pooling=getattr(model_args, "pooling", "mean"),
+        hand_features=bool(getattr(model_args, "hand_features", False)),
     ).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()

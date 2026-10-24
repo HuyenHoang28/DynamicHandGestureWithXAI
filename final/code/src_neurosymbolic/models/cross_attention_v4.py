@@ -145,6 +145,9 @@ class DualCrossAttentionV4NeuroSymbolicModel(DualCrossAttentionNeuroSymbolicMode
         instance_tokens: int = 16,
         dropout: float = 0.15,
         directed_temporal_edges: bool = False,
+        use_motion_features: bool = False,
+        neural_pooling: str = "mean",
+        hand_features: bool = False,
     ) -> None:
         super().__init__(
             template_dir=template_dir,
@@ -158,6 +161,9 @@ class DualCrossAttentionV4NeuroSymbolicModel(DualCrossAttentionNeuroSymbolicMode
             instance_tokens=instance_tokens,
             dropout=dropout,
             directed_temporal_edges=directed_temporal_edges,
+            use_motion_features=use_motion_features,
+            neural_pooling=neural_pooling,
+            hand_features=hand_features,
         )
         self.graph_encoder = StructuredRequirementGraphEncoder(
             template_dir=template_dir,

@@ -137,6 +137,12 @@ def main(args: argparse.Namespace) -> None:
         "dropout": float(saved["dropout"]),
     }
     directed_temporal_edges = str(saved.get("directed_temporal_edges", "False")).lower() == "true"
+    # Older checkpoints predate these options and rebuild the original 3-feature, mean-pooled neural branch.
+    neural_options = {
+        "use_motion_features": str(saved.get("neural_motion_features", "False")).lower() == "true",
+        "hand_features": str(saved.get("neural_hand_features", "False")).lower() == "true",
+    }
+    neural_pooling = str(saved.get("neural_pooling", "mean"))
     if checkpoint.get("model_version") == "v4_neural_logits_only":
         model = NeuralBaselineAdapter(
             num_classes=num_classes,
@@ -145,6 +151,8 @@ def main(args: argparse.Namespace) -> None:
             layers=int(saved["layers"]),
             heads=int(saved["heads"]),
             dropout=float(saved["dropout"]),
+            pooling=neural_pooling,
+            **neural_options,
         )
         fusion_mode = "v4_neural_logits_only"
     elif checkpoint.get("model_version") == "v5_template_tuned_dual_cross_attention":
@@ -157,6 +165,8 @@ def main(args: argparse.Namespace) -> None:
         model = DualCrossAttentionV4NeuroSymbolicModel(
             **common_model_args,
             directed_temporal_edges=directed_temporal_edges,
+            neural_pooling=neural_pooling,
+            **neural_options,
         )
         fusion_mode = "v4_structured_requirement_dual_cross_attention"
     elif checkpoint.get("model_version") == "v3_dual_cross_attention":

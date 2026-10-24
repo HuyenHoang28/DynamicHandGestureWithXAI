@@ -25,17 +25,50 @@ def macro_f1(predictions: list[int], labels: list[int], num_classes: int) -> flo
     return sum(scores) / max(len(scores), 1)
 
 
+def temporal_crop_resample(keypoints: torch.Tensor, min_fraction: float) -> torch.Tensor:
+    """Random crop of each clip, resampled back to the original length.
+
+    The kept window is between ``min_fraction`` and 100% of the clip, so events
+    land at different speeds and positions. Frames are copied (nearest index),
+    never blended, so missing joints stay missing.
+    """
+    batch, frames = keypoints.shape[:2]
+    min_length = max(2, int(round(min_fraction * frames)))
+    lengths = torch.randint(min_length, frames + 1, (batch,), device=keypoints.device)
+    starts = (torch.rand(batch, device=keypoints.device) * (frames - lengths + 1).float()).floor().long()
+    steps = torch.linspace(0.0, 1.0, frames, device=keypoints.device)
+    index = starts[:, None] + (steps[None, :] * (lengths[:, None] - 1).float()).round().long()
+    index = index.clamp_(max=frames - 1)
+    return keypoints[torch.arange(batch, device=keypoints.device)[:, None], index]
+
+
 def augment_keypoints(
     keypoints: torch.Tensor,
     jitter_std: float,
     frame_mask_probability: float,
     keypoint_dropout_probability: float,
+    time_crop_min: float = 1.0,
+    scale_jitter: float = 0.0,
+    shift_std: float = 0.0,
 ) -> torch.Tensor:
-    """Apply label-preserving noise without turning missing joints into fake joints."""
+    """Apply label-preserving noise without turning missing joints into fake joints.
+
+    ``time_crop_min`` (<1 enables), ``scale_jitter`` and ``shift_std`` are opt-in
+    and default to off so existing recipes are unchanged. Scale and shift act on
+    the shoulder-normalised coordinates (a per-clip zoom and camera offset).
+    """
     output = keypoints.clone()
+    if time_crop_min < 1.0:
+        output = temporal_crop_resample(output, time_crop_min)
     point_valid = output[..., 2] > 0 if output.shape[-1] >= 3 else torch.ones_like(
         output[..., 0], dtype=torch.bool
     )
+    if scale_jitter > 0 or shift_std > 0:
+        batch = output.shape[0]
+        scale = 1.0 + (torch.rand(batch, 1, 1, 1, device=output.device) * 2.0 - 1.0) * scale_jitter
+        shift = torch.randn(batch, 1, 1, 2, device=output.device) * shift_std
+        moved = output[..., :2] * scale + shift
+        output[..., :2] = torch.where(point_valid.unsqueeze(-1), moved, output[..., :2])
     if jitter_std > 0:
         noise = torch.randn_like(output[..., :2]) * jitter_std
         output[..., :2] += noise * point_valid.unsqueeze(-1)
@@ -143,6 +176,7 @@ def train(args: argparse.Namespace) -> None:
         dropout=args.dropout,
         use_motion_features=not args.disable_motion_features,
         pooling=args.pooling,
+        hand_features=args.hand_features,
     ).to(device)
     if torch.cuda.is_available() and torch.cuda.device_count() > 1 and args.data_parallel:
         print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
@@ -181,6 +215,9 @@ def train(args: argparse.Namespace) -> None:
                 args.jitter_std,
                 args.frame_mask_probability,
                 args.keypoint_dropout_probability,
+                time_crop_min=args.time_crop_min,
+                scale_jitter=args.scale_jitter,
+                shift_std=args.shift_std,
             )
             optimizer.zero_grad(set_to_none=True)
             logits = model(x)
@@ -285,6 +322,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--pooling", choices=["mean", "masked_mean", "attention"], default="attention")
     parser.add_argument("--disable-motion-features", action="store_true")
+    parser.add_argument(
+        "--hand-features",
+        action="store_true",
+        help="Append scale-invariant finger flexion / pinch geometry and its frame-to-frame change.",
+    )
+    parser.add_argument(
+        "--time-crop-min",
+        type=float,
+        default=1.0,
+        help="<1 enables a random temporal crop keeping this fraction to 100% of each clip.",
+    )
+    parser.add_argument("--scale-jitter", type=float, default=0.0, help="Per-clip zoom, uniform in 1 +/- value.")
+    parser.add_argument("--shift-std", type=float, default=0.0, help="Per-clip xy offset std (shoulder-width units).")
     parser.add_argument("--label-smoothing", type=float, default=0.05)
     parser.add_argument("--class-weight-power", type=float, default=0.5)
     parser.add_argument("--jitter-std", type=float, default=0.005)

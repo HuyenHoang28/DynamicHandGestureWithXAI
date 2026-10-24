@@ -7,6 +7,8 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from .hand_geometry import HAND_GEOMETRY_DIMS, hand_geometry_inputs
+
 
 NODE_TYPES = [
     "Video", "Gesture", "Phase", "Event", "BodyPart", "Motion", "Position",
@@ -29,10 +31,16 @@ REQUIREMENT_LEVELS = {
 
 
 def load_checkpoint_compat(path: str | Path) -> dict:
-    # Older checkpoints contain pathlib.WindowsPath objects in saved CLI args.
-    if os.name != "nt":
-        pathlib.WindowsPath = pathlib.PosixPath
-    return torch.load(path, map_location="cpu", weights_only=False)
+    # Checkpoints keep the CLI args as pathlib objects, so one written on Windows holds WindowsPath and
+    # one written on Colab/Linux holds PosixPath. Alias the foreign class for the duration of the load only.
+    foreign = "PosixPath" if os.name == "nt" else "WindowsPath"
+    native = pathlib.WindowsPath if os.name == "nt" else pathlib.PosixPath
+    original = getattr(pathlib, foreign)
+    setattr(pathlib, foreign, native)
+    try:
+        return torch.load(path, map_location="cpu", weights_only=False)
+    finally:
+        setattr(pathlib, foreign, original)
 
 
 class PositionalEncoding(nn.Module):
@@ -50,7 +58,14 @@ class PositionalEncoding(nn.Module):
 
 
 class NeuralBaselineAdapter(nn.Module):
-    """Exact transformer baseline layout, with tokens exposed for fusion."""
+    """Exact transformer baseline layout, with tokens exposed for fusion.
+
+    Defaults reproduce the original adapter (3 features per keypoint, mean
+    pooling) so existing V4 checkpoints load unchanged. ``use_motion_features``,
+    ``pooling`` and ``hand_features`` mirror ``NeuralOnlyClassifier`` so a
+    neural-only checkpoint trained with velocity (such as the IPN "C" recipe) can
+    initialise V4 instead of being replaced by a weaker no-velocity copy.
+    """
 
     def __init__(
         self,
@@ -62,10 +77,24 @@ class NeuralBaselineAdapter(nn.Module):
         layers: int = 3,
         heads: int = 4,
         dropout: float = 0.1,
+        use_motion_features: bool = False,
+        pooling: str = "mean",
+        hand_features: bool = False,
     ) -> None:
         super().__init__()
+        if pooling not in {"mean", "masked_mean", "attention"}:
+            raise ValueError(f"Unknown pooling: {pooling}")
+        if hand_features and num_keypoints != 52:
+            raise ValueError("hand_features needs the 52-keypoint layout")
+        self.num_keypoints = num_keypoints
+        self.input_dims = input_dims
+        self.use_motion_features = use_motion_features
+        self.pooling = pooling
+        self.hand_features = hand_features
+        feature_dims = input_dims + (2 if use_motion_features else 0)
+        extra_dims = HAND_GEOMETRY_DIMS * 2 if hand_features else 0
         self.input_proj = nn.Sequential(
-            nn.Linear(num_keypoints * input_dims, d_model),
+            nn.Linear(num_keypoints * feature_dims + extra_dims, d_model),
             nn.LayerNorm(d_model),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -84,6 +113,12 @@ class NeuralBaselineAdapter(nn.Module):
         self.encoder.pos = PositionalEncoding(d_model, num_frames)
         self.encoder.encoder = nn.TransformerEncoder(encoder_layer, num_layers=layers)
         self.encoder.norm = nn.LayerNorm(d_model)
+        if pooling == "attention":
+            self.pool_score = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.Tanh(),
+                nn.Linear(d_model // 2, 1),
+            )
         self.classifier = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, d_model),
@@ -94,10 +129,36 @@ class NeuralBaselineAdapter(nn.Module):
 
     def forward(self, keypoints: torch.Tensor) -> dict[str, torch.Tensor]:
         batch, frames, keypoints_count, dims = keypoints.shape
-        x = keypoints.reshape(batch, frames, keypoints_count * dims)
+        features = keypoints
+        if self.use_motion_features:
+            velocity = torch.zeros_like(keypoints[..., :2])
+            velocity[:, 1:] = keypoints[:, 1:, :, :2] - keypoints[:, :-1, :, :2]
+            if dims >= 3:
+                point_valid = keypoints[..., 2] > 0
+                pair_valid = point_valid[:, 1:] & point_valid[:, :-1]
+                velocity[:, 1:] *= pair_valid.unsqueeze(-1)
+            features = torch.cat([keypoints, velocity], dim=-1)
+        x = features.reshape(batch, frames, -1)
+        if self.hand_features:
+            x = torch.cat([x, hand_geometry_inputs(keypoints)], dim=-1)
         x = self.input_proj(x)
         tokens = self.encoder.norm(self.encoder.encoder(self.encoder.pos(x)))
-        pooled = tokens.mean(dim=1)
+        if self.pooling == "mean":
+            pooled = tokens.mean(dim=1)
+        else:
+            frame_valid = keypoints[..., 2].amax(dim=2) > 0 if dims >= 3 else torch.ones(
+                (batch, frames), dtype=torch.bool, device=keypoints.device
+            )
+            if self.pooling == "masked_mean":
+                weights = frame_valid.to(tokens.dtype)
+                weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
+            else:
+                scores = self.pool_score(tokens).squeeze(-1)
+                scores = scores.masked_fill(~frame_valid, torch.finfo(scores.dtype).min)
+                all_invalid = ~frame_valid.any(dim=1)
+                scores = torch.where(all_invalid.unsqueeze(1), torch.zeros_like(scores), scores)
+                weights = scores.softmax(dim=1)
+            pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
         return {"tokens": tokens, "pooled": pooled, "logits": self.classifier(pooled)}
 
     def load_baseline_checkpoint(self, checkpoint_path: str | Path) -> None:
