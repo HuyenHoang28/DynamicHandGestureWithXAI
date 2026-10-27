@@ -961,7 +961,7 @@ Symbolic V2 chưa đạt mức có thể tuyên bố tăng accuracy:
 
 Do đó template +10–15 điểm là target cần chứng minh bằng validation và ablation, không phải giả định được phép cộng vào neural score.
 
-Một full-run snapshot đã tồn tại trong notebook kết quả local `notebooks/IPN_Symbolic_V2_Colab_res.ipynb` (file này hiện chưa được track trên GitHub):
+Một full-run snapshot đã tồn tại trong notebook kết quả local `results/experiments/ipn13/notebooks/IPN_Symbolic_V2_Colab_res.ipynb` (file này hiện chưa được track trên GitHub):
 
 | Split | Accuracy | Macro-F1 |
 |---|---:|---:|

@@ -11,10 +11,12 @@ from src_neurosymbolic.predicates.extract_predicates import (  # noqa: E402
     extract_coordination,
     extract_finger_motion,
     extract_motion,
+    extract_predicates,
     trend_consistency_ratio,
     validate_trend_consistency,
 )
 from src_neurosymbolic.events.build_events_phase_v2 import build_events_phase_v2  # noqa: E402
+from src_neurosymbolic.kg.build_instance_graph_phase_v2 import build_instance_graph_phase_v2  # noqa: E402
 
 
 def keypoint(x: float, y: float, score: float = 1.0) -> dict:
@@ -44,6 +46,77 @@ def motion_frames() -> list[dict]:
 
 
 class PredicateV2Tests(unittest.TestCase):
+    def test_temporal_factor_v3_is_opt_in_and_preserves_distinct_click_ids(self) -> None:
+        def make_frame(frame_id: int, closed: bool) -> dict:
+            tip_offset = 0.25 if closed else 1.5
+            points = {
+                "right_hand_root": keypoint(0.0, 0.0),
+                "right_wrist": keypoint(0.0, -1.0),
+                "right_forefinger1": keypoint(-0.5, -0.5),
+                "right_pinky_finger1": keypoint(0.5, -0.5),
+                "right_middle_finger1": keypoint(0.0, -1.0),
+                "right_forefinger4": keypoint(-0.5, -0.5 + tip_offset),
+                "right_middle_finger4": keypoint(0.0, -1.0 + tip_offset),
+                "right_thumb4": keypoint(-0.8, -0.5),
+            }
+            return {"frame_id": frame_id, "valid": True, "keypoints": points}
+
+        data = {
+            "video_id": "two-close-clicks",
+            "frames": [
+                make_frame(0, False),
+                make_frame(1, True),
+                make_frame(2, False),
+                make_frame(3, True),
+                make_frame(4, False),
+            ],
+        }
+        legacy = extract_predicates(data)
+        self.assertEqual(legacy["predicate_config"]["version"], "ipn_predicate_v2")
+        self.assertNotIn(
+            "index_click_cycle",
+            {predicate["name"] for predicate in legacy["predicates"]},
+        )
+
+        v3 = extract_predicates(
+            data,
+            enable_temporal_factors=True,
+            click_active_threshold=0.6,
+            click_inactive_threshold=0.45,
+            pinch_transition_excursion=10.0,
+        )
+        index_cycles = [
+            predicate
+            for predicate in v3["predicates"]
+            if predicate["name"] == "index_click_cycle"
+        ]
+        two_finger_cycles = [
+            predicate
+            for predicate in v3["predicates"]
+            if predicate["name"] == "two_finger_click_cycle"
+        ]
+        self.assertEqual(v3["predicate_config"]["version"], "ipn_predicate_v3")
+        self.assertEqual(len(index_cycles), 2)
+        self.assertEqual(len(two_finger_cycles), 2)
+        self.assertEqual(len({item["occurrence_id"] for item in index_cycles}), 2)
+        events = build_events_phase_v2(
+            v3,
+            min_phase_duration=1,
+            min_overlap_frames=1,
+        )
+        graph = build_instance_graph_phase_v2(events)
+        factor_occurrences = {
+            occurrence["occurrence_id"]
+            for node in graph["nodes"]
+            if node["type"] == "Event"
+            for occurrence in node["properties"].get("factor_occurrences", [])
+            if occurrence.get("predicate_name") == "index_click_cycle"
+        }
+        self.assertEqual(
+            factor_occurrences,
+            {item["occurrence_id"] for item in index_cycles},
+        )
+
     def test_hand_and_coordination_trends_skip_windows_with_missing_samples(self) -> None:
         hand_motion_frames = [
             {
@@ -203,6 +276,11 @@ class PredicateV2Tests(unittest.TestCase):
         )
         self.assertEqual(len(result["events"]), 1)
         self.assertEqual(result["events"][0]["joint_angles"], ["elbow_bent"])
+        self.assertNotIn("factor_occurrences", result["events"][0])
+        graph = build_instance_graph_phase_v2(result)
+        for node in graph["nodes"]:
+            if node["type"] in {"Event", "Evidence"}:
+                self.assertNotIn("factor_occurrences", node["properties"])
 
     def test_relative_finger_and_pinch_motion_survive_global_motion(self) -> None:
         frames = motion_frames()

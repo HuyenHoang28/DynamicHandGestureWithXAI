@@ -71,7 +71,7 @@ $MmposeRootPath = Resolve-PathFromProject $MmposeRoot
 $PoseWeightsPath = Resolve-PathFromProject $PoseWeights
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-  $OutputDirPath = Join-Path $ProjectRoot (Join-Path "final\outputs\demo_video_v4" ([System.IO.Path]::GetFileNameWithoutExtension($InputVideoPath)))
+  $OutputDirPath = Join-Path $ProjectRoot (Join-Path "results\runs\demo_video_v4" ([System.IO.Path]::GetFileNameWithoutExtension($InputVideoPath)))
 } else {
   $OutputDirPath = Resolve-PathFromProject $OutputDir
 }

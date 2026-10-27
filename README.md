@@ -6,6 +6,12 @@ Data cache và checkpoint không được commit trực tiếp vào GitHub để
 
 Để hiểu pipeline IPN 13 lớp hiện tại từ dữ liệu, neural, pooling và augmentation đến symbolic/fusion, đọc [Handbook toàn diện IPN neuro-symbolic](docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md). Quy trình viết, kiểm chứng và tích hợp template nằm trong [Playbook template IPN 13 lớp](docs/IPN_TEMPLATE_AUTHORING_PLAYBOOK_VI.md).
 
+Notebook Colab để huấn luyện/đánh giá learned `kg_logits` trên IPN-13 và so
+sánh với neural-only baseline nằm tại
+[`notebooks/IPN13_KG_Logits_Baseline_Comparison_Colab.ipynb`](notebooks/IPN13_KG_Logits_Baseline_Comparison_Colab.ipynb).
+Protocol chống test leakage và cách đọc kết quả được mô tả tại
+[`docs/IPN13_KG_LOGITS_EXPERIMENT_PROTOCOL_VI.md`](docs/IPN13_KG_LOGITS_EXPERIMENT_PROTOCOL_VI.md).
+
 ## Nội dung repo
 
 ```text
@@ -13,6 +19,9 @@ final/code/                         Code train, test, demo
 final/data/Input/                   Không commit; cần tải/copy riêng
 final/data/Output/checkpoints/      Không commit; cần tải/copy riêng nếu muốn test/demo ngay
 final/scripts/                      Script vẽ confusion matrix
+results/runs/                       Kết quả chạy mới, có thể tái lập
+results/final/                      Bundle checkpoint/evidence chính
+results/experiments/                Thử nghiệm, ablation và artifact lịch sử
 keypoint_extractor/                 Script trích xuất keypoint RTMW-L từ video
 requirements.txt                    Thư viện Python cần cài
 docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md  Handbook IPN 13 lớp hiện tại
@@ -128,7 +137,7 @@ Mô hình chính cuối cùng là V4 neuro-symbolic fusion:
 Kết quả lưu ở:
 
 ```text
-final/outputs/train_v4_fusion_rerun/
+results/runs/date27_v4_fusion_train/
 ```
 
 Trong đó có:
@@ -154,8 +163,12 @@ Nếu không có GPU:
 Kết quả test lưu ở:
 
 ```text
-final/Experiment/reports/packaged_test_fusion_best_test/
+results/runs/date27_v4_validation_selected/
 ```
+
+Wrapper mặc định dùng `best.pt`. `best_test.pt` đã dùng test để chọn checkpoint và chỉ được phép chạy khi truyền rõ `-AllowTestSelected`; không dùng kết quả đó làm headline.
+
+Bundle cuối cùng để báo cáo nằm tại `results/final/date27_v4_validation_selected/`.
 
 ## Chạy demo UI
 

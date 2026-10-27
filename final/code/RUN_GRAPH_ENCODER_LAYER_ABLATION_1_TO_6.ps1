@@ -14,7 +14,7 @@ param(
   [string]$TemplateDir = "final\data\Input\template_graphs",
   [string]$TrainFile = "final\data\Input\train.txt",
   [string]$ValFile = "final\data\Input\val.txt",
-  [string]$OutputRoot = "final\outputs\graph_encoder_layer_ablation_scratch"
+  [string]$OutputRoot = "results\experiments\date27\graph_encoder_layer_ablation_scratch"
 )
 
 $ErrorActionPreference = "Stop"

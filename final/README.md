@@ -52,7 +52,7 @@ Nếu đủ file cần thiết, script sẽ báo `OK`.
   --cache-root final\data\Input\keypoint_tensor_cache `
   --train-file final\data\Input\train.txt `
   --val-file final\data\Input\val.txt `
-  --output-dir final\outputs\train_neural_only `
+  --output-dir results\runs\date27_neural_only `
   --epochs 30 `
   --device cuda:0
 ```
@@ -69,7 +69,7 @@ Nếu không có GPU, đổi `cuda:0` thành `cpu`.
   --template-dir final\data\Input\template_graphs `
   --train-file final\data\Input\train.txt `
   --val-file final\data\Input\val.txt `
-  --output-dir final\outputs\train_v4_kg_only `
+  --output-dir results\runs\date27_v4_kg_only `
   --logit-branch kg `
   --freeze-neural-for-kg `
   --epochs 30 `
@@ -88,7 +88,7 @@ Nếu không có GPU, đổi `cuda:0` thành `cpu`.
   --template-dir final\data\Input\template_graphs `
   --train-file final\data\Input\train.txt `
   --val-file final\data\Input\val.txt `
-  --output-dir final\outputs\train_v4_fusion `
+  --output-dir results\runs\date27_v4_fusion `
   --logit-branch final `
   --epochs 30 `
   --device cuda:0
@@ -118,7 +118,7 @@ history.json
   --batch-size 128 `
   --num-workers 0 `
   --device cuda:0 `
-  --output final\Experiment\reports\packaged_test_neural_only.json
+  --output results\runs\date27_neural_only_test\test_metrics.json
 ```
 
 ## 7. Test KG-Only
@@ -135,14 +135,14 @@ history.json
   --num-workers 0 `
   --device cuda:0 `
   --eval-branch kg `
-  --output final\Experiment\reports\packaged_test_kg_guided
+  --output results\runs\date27_kg_guided_test\test_metrics.json
 ```
 
 ## 8. Test Neuro-Symbolic Fusion
 
 ```powershell
 .\.venv\Scripts\python.exe final\code\src_neurosymbolic\test_cross_attention_v2.py `
-  --checkpoint final\data\Output\checkpoints\cross_attention_v4_template170_retrain_next\best_test.pt `
+  --checkpoint final\data\Output\checkpoints\cross_attention_v4_template170_retrain_next\best.pt `
   --keypoint-root final\data\Input\keypoint_tensor_cache `
   --cache-root final\data\Input\keypoint_tensor_cache `
   --instance-graph-root final\data\Input\instance_graphs `
@@ -152,7 +152,7 @@ history.json
   --num-workers 0 `
   --eval-branch final `
   --device cuda:0 `
-  --output final\Experiment\reports\packaged_test_fusion_best_test
+  --output results\runs\date27_v4_validation_selected\test_metrics.json
 ```
 
 Hoặc chạy script gọn ở thư mục gốc:

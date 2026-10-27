@@ -3,7 +3,7 @@ param(
   [string]$Device = "cuda:0",
   [int]$Epochs = 30,
   [int]$BatchSize = 32,
-  [string]$OutputDir = "final\outputs\train_v4_fusion_rerun"
+  [string]$OutputDir = "results\runs\date27_v4_fusion_train"
 )
 
 $ErrorActionPreference = "Stop"

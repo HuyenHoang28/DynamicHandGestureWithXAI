@@ -175,3 +175,15 @@ Chỉ mở locked test khi thỏa toàn bộ:
 - unit/integration tests của predicate, template graph và matcher đều pass.
 
 Nếu neural vẫn có lớp dưới 0.65 sau A/B/C, trước hết phải xác định đó là thiếu tín hiệu, mất cân bằng, segmentation hay pooling. Template chỉ hợp lý khi lỗi có cấu trúc và predicate quan sát được; nó không nên che một neural baseline chưa ổn định.
+## 8. Quy tắc V3: temporal factor và pair-residual (2026-10-27)
+
+Với các cặp `G01/G08`, `G02/G09`, `G10/G11`, không dùng số directional window đã merge làm ground truth cho số click hoặc hướng zoom. Template V3 chỉ được dùng occurrence từ detector chu kỳ/transition có ID và quality riêng:
+
+- `index_click_cycle`: một chu kỳ press-release hoàn tất;
+- `two_finger_click_cycle`: chu kỳ index và middle đồng bộ;
+- `pinch_opening` / `pinch_closing`: dominant active transition, không phải pha return;
+- evidence thiếu hoặc mâu thuẫn phải abstain.
+
+Không bật V3 bằng cách thay trực tiếp template V2 trong một run cũ. Predicate config, graph provenance và template version phải cùng V3. Trước khi tích hợp classifier, báo coverage, exact count/direction accuracy, score margin, beneficial/harmful/net corrections trên validation.
+
+Khi đưa temporal factor vào classifier, ưu tiên pair-residual: chỉ sửa hai logits của cặp neural top-2 hợp lệ và giữ nguyên mọi lớp khác. Không dùng global fusion để ép factor yếu tác động lên cả 13 lớp. Chi tiết kiến trúc và validation gate nằm trong `IPN_TEMPORAL_FACTORS_PAIR_RESIDUAL_ARCHITECTURE_VI.md`.

@@ -13,6 +13,9 @@ node_modules/
 final/outputs/
 final/results/
 final/Experiment/reports/
+results/runs/
+results/experiments/
+results/final/
 final/data/
 final/checkpoints/
 keypoint_extractor/checkpoints/

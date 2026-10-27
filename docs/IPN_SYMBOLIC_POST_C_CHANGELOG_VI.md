@@ -4,7 +4,7 @@ Ngày cập nhật: 2026-10-21
 
 ## Mốc đối chiếu
 
-Artifact đầu vào: `external_data/ipn_symbolic_v2_post_c-20261021T140256Z-1-001.zip`.
+Artifact đầu vào: `results/experiments/ipn13/artifact_zips/ipn_symbolic_v2_post_c-20261021T140256Z-1-001.zip`.
 
 - Validation: accuracy `0.20034`, macro-F1 `0.06262`.
 - `250/589` clip hòa điểm; top-2 margin trung bình `0.01156`.
@@ -107,7 +107,7 @@ với trend gate mới rồi mới đánh giá lại hai ngưỡng.
 
 ### Nguồn quyết định
 
-Artifact được phân tích: `external_data/035179b821061ab7-20261022T015729Z-1-001.zip`, commit `e0a1e50`.
+Artifact được phân tích: `results/experiments/ipn13/artifact_zips/035179b821061ab7-20261022T015729Z-1-001.zip`, commit `e0a1e50`.
 
 - CRC, số graph và toàn bộ hash payload hợp lệ; train `2443`, validation `589`, thiếu graph `0`.
 - Raw 13-way validation tăng nhẹ từ accuracy `0.20034` lên `0.21732`, macro-F1 từ `0.06262` lên `0.08708`.
@@ -193,7 +193,7 @@ Rescore 589 graph 6ef với hard role gate đã bỏ cho accuracy `0.06621`, Mac
 
 ### Nguồn quyết định
 
-Artifact `external_data/d255086f928a0615-20261022T075132Z-1-001.zip` hợp lệ, đúng commit `1ef544c`, đủ `2443` train và `589` validation graph, không thiếu graph. `directional_reversal_v2` giảm role `ambiguous` từ `63,2%` ở 6ef xuống `8186/274894 = 2,98%`, nhưng kết quả classifier gần như trở lại mốc 0351: validation accuracy `0.06621`, Macro-F1 `0.04686`, coverage `0.20713` và selective accuracy `0.31967`.
+Artifact `results/experiments/ipn13/artifact_zips/d255086f928a0615-20261022T075132Z-1-001.zip` hợp lệ, đúng commit `1ef544c`, đủ `2443` train và `589` validation graph, không thiếu graph. `directional_reversal_v2` giảm role `ambiguous` từ `63,2%` ở 6ef xuống `8186/274894 = 2,98%`, nhưng kết quả classifier gần như trở lại mốc 0351: validation accuracy `0.06621`, Macro-F1 `0.04686`, coverage `0.20713` và selective accuracy `0.31967`.
 
 Hard `action_role: active` không được phục hồi vì đã chứng minh làm mất recall. Thay vào đó matcher áp dụng `active_share_soft_v1` trên các interval có role quyết định:
 
@@ -238,3 +238,12 @@ Floor `0.85` là lựa chọn calibration bảo thủ trên validation, chưa ph
 Audit với neural C tại neural margin `0.20` vẫn đề xuất đúng một override và override đó harmful (`net -1`), nên thay đổi này chưa cấp quyền bật fusion. Locked test không được chạy.
 
 Validation cuối: focused suite `55 passed`; full repository suite `123 passed`, `3` warning PyTorch đã có sẵn. Review độc lập không còn blocker sau khi khóa config production bằng test, thêm contract V1 và ghi rõ tiêu chí chọn floor từ sweep lân cận.
+## Cập nhật 2026-10-27 — bắt đầu temporal factor V3 và pair-residual
+
+- Thay đổi: thêm tài liệu kiến trúc cho click-cycle, synchronized two-finger cycle, dominant pinch transition và pair-specific residual; bổ sung quy tắc authoring V3. Triển khai module temporal factor, adapter normalized-keypoint, predicate/provenance V3 opt-in và bảo toàn occurrence ID trong event builder.
+- Lý do: audit run ensemble 3 seed cho thấy lỗi vẫn tập trung ở `G01/G08`, `G02/G09`, `G10/G11`; predicate cửa sổ trượt không đại diện ổn định cho click count, còn global KG fusion từng gây net harm.
+- Tương thích/an toàn: V2 tiếp tục là mặc định; V3 phải có predicate config, graph provenance và template version riêng. Không tune bằng test đã mở, evidence không chắc phải abstain, và residual không được đổi logits ngoài cặp mục tiêu.
+- Review/safety: detector yêu cầu inactive baseline trước click, reset qua occlusion dài, từ chối zero-overlap two-finger match, trả `unknown` cho hai hướng pinch gần tương đương; factor metadata được giữ xuyên predicate → event → graph và factor ngắn hợp lệ không còn bị duration filter V2 loại nhầm. Calibration chỉ nhận đúng `1` hoặc `2` occurrence; từ `3` trở lên abstain thay vì bị tính nhầm là double-click.
+- Calibration/Colab: thêm CLI train/validation-only và notebook `IPN13_Temporal_Factor_V3_Calibration_Colab.ipynb`; chọn config duy nhất bằng validation coverage/accuracy, xuất diagnostics từng cặp/subject và artifact có hash/provenance. Notebook không có đường chạy test. Sửa shared dataset resolver để nhận cache IPN `T64/<split>/<label>/<subject>/<clip>.pt`; CLI và preflight từ chối mọi source path thiếu split hoặc lệch khỏi file `train`/`val`, nên manifest bị trộn không thể mở tensor test. Notebook preflight toàn bộ target cache trước sweep và ZIP chứa `input_tensors.jsonl` với path/kích thước/SHA-256 của từng tensor thực sự đã đọc.
+- Tương thích: nhánh resolve cache cũ vẫn được giữ làm fallback; thay đổi mới chỉ bổ sung candidate canonical. Preflight cố ý từ chối raw JSON fallback trong notebook calibration để không vô tình trộn raw và tensor cache.
+- Validation tại thời điểm ghi: focused suite `30 passed`; full repository suite `176 passed`, `32 warnings` PyTorch đã biết; notebook JSON/code cells compile thành công. Full train/validation chưa chạy do workspace chỉ có raw B0A cục bộ và không có full tensor cache; threshold V3 chưa được calibration và pair-residual chưa được huấn luyện.

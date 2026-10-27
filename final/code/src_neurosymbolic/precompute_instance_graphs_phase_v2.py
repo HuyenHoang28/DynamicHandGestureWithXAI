@@ -19,7 +19,16 @@ from src_neurosymbolic.models.keypoint_dataset import (
 )
 from src_neurosymbolic.pose.normalize_keypoints import normalize_video
 from src_neurosymbolic.predicates.extract_predicates import (
+    DEFAULT_CLICK_ACTIVE_THRESHOLD,
+    DEFAULT_CLICK_INACTIVE_THRESHOLD,
+    DEFAULT_CLICK_MIN_CONFIDENCE,
     DEFAULT_MOTION_THRESHOLD,
+    DEFAULT_PINCH_TRANSITION_EXCURSION,
+    DEFAULT_PINCH_TRANSITION_VALID_RATIO,
+    DEFAULT_PINCH_DOMINANCE_RATIO,
+    DEFAULT_TEMPORAL_MAX_GAP,
+    DEFAULT_TWO_FINGER_OVERLAP,
+    DEFAULT_TWO_FINGER_START_DELTA,
     IPN_FINGER_MOTION_THRESHOLD,
     IPN_HAND_MOTION_THRESHOLD,
     IPN_PINCH_THRESHOLD,
@@ -142,6 +151,16 @@ def precompute_split(
     pinch_threshold: float | None = None,
     continue_on_error: bool = False,
     trend_consistency: float | None = None,
+    enable_temporal_factors: bool = False,
+    click_active_threshold: float = DEFAULT_CLICK_ACTIVE_THRESHOLD,
+    click_inactive_threshold: float = DEFAULT_CLICK_INACTIVE_THRESHOLD,
+    click_min_confidence: float = DEFAULT_CLICK_MIN_CONFIDENCE,
+    two_finger_start_delta: int = DEFAULT_TWO_FINGER_START_DELTA,
+    two_finger_overlap: float = DEFAULT_TWO_FINGER_OVERLAP,
+    pinch_transition_excursion: float = DEFAULT_PINCH_TRANSITION_EXCURSION,
+    pinch_transition_valid_ratio: float = DEFAULT_PINCH_TRANSITION_VALID_RATIO,
+    temporal_max_gap: int = DEFAULT_TEMPORAL_MAX_GAP,
+    pinch_dominance_ratio: float = DEFAULT_PINCH_DOMINANCE_RATIO,
 ) -> dict:
     # Keep a legacy aggregate threshold for programmatic callers while making
     # the phase-v2/IPN defaults explicit for new precompute runs.
@@ -168,6 +187,16 @@ def precompute_split(
         finger_motion_threshold=resolved_finger_threshold,
         pinch_threshold=resolved_pinch_threshold,
         trend_consistency=resolved_trend_consistency,
+        enable_temporal_factors=enable_temporal_factors,
+        click_active_threshold=click_active_threshold,
+        click_inactive_threshold=click_inactive_threshold,
+        click_min_confidence=click_min_confidence,
+        two_finger_start_delta=two_finger_start_delta,
+        two_finger_overlap=two_finger_overlap,
+        pinch_transition_excursion=pinch_transition_excursion,
+        pinch_transition_valid_ratio=pinch_transition_valid_ratio,
+        temporal_max_gap=temporal_max_gap,
+        pinch_dominance_ratio=pinch_dominance_ratio,
     )
     build_config = {
         "schema_version": 2,
@@ -249,6 +278,16 @@ def precompute_split(
                     finger_motion_threshold=resolved_finger_threshold,
                     pinch_threshold=resolved_pinch_threshold,
                     trend_consistency=resolved_trend_consistency,
+                    enable_temporal_factors=enable_temporal_factors,
+                    click_active_threshold=click_active_threshold,
+                    click_inactive_threshold=click_inactive_threshold,
+                    click_min_confidence=click_min_confidence,
+                    two_finger_start_delta=two_finger_start_delta,
+                    two_finger_overlap=two_finger_overlap,
+                    pinch_transition_excursion=pinch_transition_excursion,
+                    pinch_transition_valid_ratio=pinch_transition_valid_ratio,
+                    temporal_max_gap=temporal_max_gap,
+                    pinch_dominance_ratio=pinch_dominance_ratio,
                 )
                 events_data = build_events_phase_v2(
                     predicates_data,
@@ -348,6 +387,20 @@ def parse_args() -> argparse.Namespace:
             f"(IPN phase-v2 default: {IPN_TREND_CONSISTENCY}; 0 disables the gate)."
         ),
     )
+    parser.add_argument(
+        "--enable-temporal-factors",
+        action="store_true",
+        help="Emit experimental V3 click-cycle/pinch-transition evidence; off preserves V2.",
+    )
+    parser.add_argument("--click-active-threshold", type=float, default=DEFAULT_CLICK_ACTIVE_THRESHOLD)
+    parser.add_argument("--click-inactive-threshold", type=float, default=DEFAULT_CLICK_INACTIVE_THRESHOLD)
+    parser.add_argument("--click-min-confidence", type=float, default=DEFAULT_CLICK_MIN_CONFIDENCE)
+    parser.add_argument("--two-finger-start-delta", type=int, default=DEFAULT_TWO_FINGER_START_DELTA)
+    parser.add_argument("--two-finger-overlap", type=float, default=DEFAULT_TWO_FINGER_OVERLAP)
+    parser.add_argument("--pinch-transition-excursion", type=float, default=DEFAULT_PINCH_TRANSITION_EXCURSION)
+    parser.add_argument("--pinch-transition-valid-ratio", type=float, default=DEFAULT_PINCH_TRANSITION_VALID_RATIO)
+    parser.add_argument("--temporal-max-gap", type=int, default=DEFAULT_TEMPORAL_MAX_GAP)
+    parser.add_argument("--pinch-dominance-ratio", type=float, default=DEFAULT_PINCH_DOMINANCE_RATIO)
     return parser.parse_args()
 
 
@@ -381,6 +434,16 @@ def main() -> None:
                 pinch_threshold=args.pinch_threshold,
                 trend_consistency=args.trend_consistency,
                 continue_on_error=args.allow_failures,
+                enable_temporal_factors=args.enable_temporal_factors,
+                click_active_threshold=args.click_active_threshold,
+                click_inactive_threshold=args.click_inactive_threshold,
+                click_min_confidence=args.click_min_confidence,
+                two_finger_start_delta=args.two_finger_start_delta,
+                two_finger_overlap=args.two_finger_overlap,
+                pinch_transition_excursion=args.pinch_transition_excursion,
+                pinch_transition_valid_ratio=args.pinch_transition_valid_ratio,
+                temporal_max_gap=args.temporal_max_gap,
+                pinch_dominance_ratio=args.pinch_dominance_ratio,
             )
         )
     print("Done.")

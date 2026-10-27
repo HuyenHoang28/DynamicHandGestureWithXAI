@@ -1,6 +1,6 @@
 param(
-    [string]$VideoRoot = "benchmark_data\raw\gestures_demo_mp4",
-    [string]$OutputDir = "final\outputs\evaluations\keypoint_model_benchmark",
+    [string]$VideoRoot = "results\experiments\date27\keypoint_benchmark_data\raw\gestures_demo_mp4",
+    [string]$OutputDir = "results\runs\keypoint_model_benchmark",
     [string]$ModelsJson = "final\code\keypoint_benchmark_models.json",
     [string]$Device = "cpu",
     [int]$FramesPerVideo = 8,

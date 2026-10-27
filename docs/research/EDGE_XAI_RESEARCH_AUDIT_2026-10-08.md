@@ -36,8 +36,8 @@ Bằng chứng mã/artifact:
 
 - `final/code/src_neurosymbolic/models/cross_attention_v4.py:177–237`: hai memory, scorer, fusion.
 - `final/code/src_neurosymbolic/train_cross_attention_v4.py:508–574`: lựa chọn và ghi best_test.
-- `final/outputs/evidence/model_evaluation_evidence/test_selected_checkpoint/summary.json`: warning và metric cũ.
-- `final/outputs/evidence/keypoint_benchmark_evidence/{combined_summary,run_metadata,rtmw_l_run}.json`: protocol/timing extractor cũ. Có trường mean_valid_keypoint_confidence > 1 ở L; phải audit định nghĩa/thang score trước khi diễn giải như xác suất.
+- `results/experiments/legacy/final_outputs/evidence/model_evaluation_evidence/test_selected_checkpoint/summary.json`: warning và metric cũ.
+- `results/experiments/legacy/final_outputs/evidence/keypoint_benchmark_evidence/{combined_summary,run_metadata,rtmw_l_run}.json`: protocol/timing extractor cũ. Có trường mean_valid_keypoint_confidence > 1 ở L; phải audit định nghĩa/thang score trước khi diễn giải như xác suất.
 - `final/code/src_neurosymbolic/demo_video_v4.py:225–294,388–421`: evidence/attention/matcher.
 - `final/code/src_neurosymbolic/demo_ui/app.py:357–402`: matcher là audit signal, không override logits.
 - `final/code/src_neurosymbolic/pose/normalize_keypoints.py:48–78` và `models/keypoint_dataset.py:143–169`: validity/resampling.

@@ -110,6 +110,13 @@ def resolve_keypoint_path(source: str, keypoint_root: Path, split: str) -> Path:
     match = re.search(r"Subject\d+_[A-Za-z0-9]+", stem)
     if match:
         subject_dir = match.group(0)
+    # IPN uses camera/subject identifiers such as ``1CM1_4`` as a directory,
+    # but that identifier is not repeated in the same form at the start of
+    # every filename. Preserve the manifest directory when available.
+    if split in parts:
+        split_index = parts.index(split)
+        if split_index + 2 < len(parts):
+            subject_dir = subject_dir or parts[split_index + 2]
 
     # Extract actual filename by stripping "{label}_{subject}_" if present
     actual_filename = filename
@@ -308,6 +315,9 @@ class KeypointSequenceDataset(Dataset):
             idx = parts.index(split_name)
             if idx + 2 >= len(parts):
                 continue
+            # Canonical IPN cache layout mirrors the manifest tail:
+            # T64/<split>/<label>/<subject>/<clip>.pt.
+            candidates.append(base / Path(*parts[idx:]).with_suffix(".pt"))
             label = parts[idx + 1]
             filename = Path(parts[-1]).stem
             prefix = f"{label}_"

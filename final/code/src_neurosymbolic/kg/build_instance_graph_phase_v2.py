@@ -45,6 +45,11 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
                 "source_atomic_event_count": event.get("source_atomic_event_count", 0),
                 "atomic_event_ids": event.get("atomic_event_ids", []),
                 "phase_event": bool(event.get("phase_event", False)),
+                **(
+                    {"factor_occurrences": event["factor_occurrences"]}
+                    if event.get("factor_occurrences")
+                    else {}
+                ),
             },
         )
         add_edge(
@@ -90,6 +95,11 @@ def build_instance_graph_phase_v2(data: dict) -> dict:
                 "end_frame": event["end_frame"],
                 "evidence_keypoints": event.get("evidence_keypoints", []),
                 "atomic_event_ids": event.get("atomic_event_ids", []),
+                **(
+                    {"factor_occurrences": event["factor_occurrences"]}
+                    if event.get("factor_occurrences")
+                    else {}
+                ),
             },
         )
         add_edge(edges, event_id, "HAS_EVIDENCE", ev_node_id, {"confidence": event["confidence"]})

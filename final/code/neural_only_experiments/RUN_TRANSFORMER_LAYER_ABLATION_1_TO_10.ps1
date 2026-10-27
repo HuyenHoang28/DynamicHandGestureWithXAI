@@ -9,7 +9,7 @@ param(
   [string]$CacheRoot = "final\data\Input\keypoint_tensor_cache",
   [string]$TrainFile = "final\data\Input\train.txt",
   [string]$ValFile = "final\data\Input\val.txt",
-  [string]$OutputRoot = "final\outputs\neural_only_layer_ablation"
+  [string]$OutputRoot = "results\experiments\date27\neural_only_layer_ablation"
 )
 
 $ErrorActionPreference = "Stop"

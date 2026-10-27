@@ -8,7 +8,7 @@ from src_neurosymbolic.events.build_events import (
     duration,
     load_predicates,
     merge_group,
-    min_duration_for,
+    min_duration_for_event,
     predicate_category,
 )
 
@@ -37,6 +37,7 @@ CONFLICT_GROUPS = [
     {"middle_finger_moves_up", "middle_finger_moves_down"},
     {"fingers_spread_increasing", "fingers_spread_decreasing"},
     {"pinch_distance_increasing", "pinch_distance_decreasing"},
+    {"pinch_opening", "pinch_closing"},
     {"hands_move_apart_horizontal", "hands_move_together_horizontal"},
     {"hands_move_same_direction_horizontal", "hands_move_opposite_direction_horizontal"},
     {"hands_move_same_direction_vertical", "hands_move_opposite_direction_vertical"},
@@ -73,6 +74,7 @@ DIRECTIONAL_OPPOSITES = {
     "middle_finger_moves_up": "middle_finger_moves_down", "middle_finger_moves_down": "middle_finger_moves_up",
     "thumb_moves_up": "thumb_moves_down", "thumb_moves_down": "thumb_moves_up",
     "pinch_distance_increasing": "pinch_distance_decreasing", "pinch_distance_decreasing": "pinch_distance_increasing",
+    "pinch_opening": "pinch_closing", "pinch_closing": "pinch_opening",
     "fingers_spread_increasing": "fingers_spread_decreasing", "fingers_spread_decreasing": "fingers_spread_increasing",
     "hands_move_apart_horizontal": "hands_move_together_horizontal",
     "hands_move_together_horizontal": "hands_move_apart_horizontal",
@@ -125,7 +127,12 @@ def classify_action_roles(atomic_events: list[dict]) -> None:
 def build_atomic_events(data: dict, max_gap: int, min_confidence: float) -> list[dict]:
     groups = defaultdict(list)
     for pred in data.get("predicates", []):
-        key = (pred.get("name"), pred.get("subject"), pred.get("object"))
+        key = (
+            pred.get("name"),
+            pred.get("subject"),
+            pred.get("object"),
+            pred.get("occurrence_id"),
+        )
         groups[key].append(pred)
 
     candidates = []
@@ -136,7 +143,7 @@ def build_atomic_events(data: dict, max_gap: int, min_confidence: float) -> list
     for event in candidates:
         if event["confidence"] < min_confidence:
             continue
-        if event["duration"] < min_duration_for(event["category"]):
+        if event["duration"] < min_duration_for_event(event):
             continue
         filtered.append(event)
 
@@ -297,6 +304,7 @@ def make_phase_event(
     total_score = 0.0
     total_overlap = 0.0
     atomic_ids = []
+    factor_occurrences = []
     concept_action_roles: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
 
     for event, score in active_events:
@@ -308,6 +316,23 @@ def make_phase_event(
             concept_action_roles[field][name].add(event["action_role"])
         evidence_keypoints.update(event.get("evidence_keypoints", []))
         atomic_ids.append(event["atomic_event_id"])
+        if event.get("occurrence_id"):
+            factor_occurrences.append(
+                {
+                    key: event[key]
+                    for key in (
+                        "occurrence_id",
+                        "factor_version",
+                        "factor_quality",
+                        "factor_excursion",
+                        "predicate_name",
+                        "start_frame",
+                        "end_frame",
+                        "confidence",
+                    )
+                    if key in event
+                }
+            )
         total_score += score
         total_overlap += max(1.0, score / max(float(event.get("confidence", 0.0)), 1e-6))
 
@@ -346,6 +371,20 @@ def make_phase_event(
         "concept_atomic_event_ids": concept_atomic_event_ids,
         "concept_action_roles": concept_action_roles_out,
         "source_atomic_event_count": len(set(atomic_ids)),
+        **(
+            {
+                "factor_occurrences": sorted(
+                    factor_occurrences,
+                    key=lambda item: (
+                        item["start_frame"],
+                        item["end_frame"],
+                        item["occurrence_id"],
+                    ),
+                )
+            }
+            if factor_occurrences
+            else {}
+        ),
         "phase_event": True,
     }
 
@@ -395,6 +434,22 @@ def merge_adjacent_phase_events(events: list[dict], max_phase_duration: int) -> 
             set(current.get("atomic_event_ids", [])) | set(event.get("atomic_event_ids", []))
         )
         current["source_atomic_event_count"] = len(current["atomic_event_ids"])
+        combined_factors = {
+            item["occurrence_id"]: item
+            for item in (
+                list(current.get("factor_occurrences", []))
+                + list(event.get("factor_occurrences", []))
+            )
+        }
+        if combined_factors:
+            current["factor_occurrences"] = sorted(
+                combined_factors.values(),
+                key=lambda item: (
+                    item["start_frame"],
+                    item["end_frame"],
+                    item["occurrence_id"],
+                ),
+            )
         merged_sources = current.setdefault("concept_atomic_event_ids", {})
         for field, names in event.get("concept_atomic_event_ids", {}).items():
             field_sources = merged_sources.setdefault(field, {})

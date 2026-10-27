@@ -2,7 +2,7 @@
 
 Ngày phân tích: 2026-10-22
 
-Artifact: `external_data/6efa8ad55dde2909-20261022T041458Z-1-001.zip`
+Artifact: `results/experiments/ipn13/artifact_zips/6efa8ad55dde2909-20261022T041458Z-1-001.zip`
 
 Commit nguồn: `160fdd6015450bb19d4573df3c35c0577ad3f54f`
 

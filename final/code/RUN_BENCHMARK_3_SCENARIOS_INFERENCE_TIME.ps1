@@ -5,7 +5,7 @@ param(
   [int]$NumWorkers = 0,
   [int]$WarmupBatches = 2,
   [int]$TimingRepeats = 1,
-  [string]$OutputRoot = "final\Experiment\reports\inference_benchmark"
+  [string]$OutputRoot = "results\runs\inference_benchmark"
 )
 
 $ErrorActionPreference = "Stop"

@@ -28,6 +28,10 @@ FINGER_MOTION_NAMES = {
     "fingers_spread_decreasing",
     "pinch_distance_increasing",
     "pinch_distance_decreasing",
+    "index_click_cycle",
+    "two_finger_click_cycle",
+    "pinch_opening",
+    "pinch_closing",
 }
 COORDINATION_NAMES = {
     "hands_move_same_direction_horizontal",
@@ -140,6 +144,14 @@ def min_duration_for(category: str) -> int:
     }.get(category, 2)
 
 
+def min_duration_for_event(event: dict) -> int:
+    """V3 factor boundaries are detector-owned; keep a two-frame transition."""
+
+    if event.get("factor_version") == "temporal_factor_v3":
+        return 2
+    return min_duration_for(event["category"])
+
+
 def duration(pred: dict) -> int:
     return int(pred["end_frame"]) - int(pred["start_frame"]) + 1
 
@@ -189,6 +201,11 @@ def make_event_candidate(predicates: list[dict]) -> dict:
     start = min(int(pred["start_frame"]) for pred in predicates)
     end = max(int(pred["end_frame"]) for pred in predicates)
     category = predicate_category(first["name"])
+    factor_metadata = {
+        key: first[key]
+        for key in ("occurrence_id", "factor_version", "factor_quality", "factor_excursion")
+        if key in first
+    }
     return {
         "predicate_name": first["name"],
         "category": category,
@@ -200,6 +217,7 @@ def make_event_candidate(predicates: list[dict]) -> dict:
         "confidence": round(weighted_confidence(predicates), 6),
         "evidence_keypoints": evidence,
         "source_predicate_count": len(predicates),
+        **factor_metadata,
     }
 
 
@@ -298,7 +316,15 @@ def make_composite_candidate(subject: str, atomic_events: list[dict]) -> dict:
 def build_events(data: dict, max_gap: int = 2, min_confidence: float = 0.3, composite_gap: int = 4) -> dict:
     groups = defaultdict(list)
     for pred in data.get("predicates", []):
-        key = (pred.get("name"), pred.get("subject"), pred.get("object"))
+        # V3 factor occurrences carry stable IDs and must never be merged just
+        # because two completed cycles are close in time. Legacy predicates do
+        # not have an occurrence ID and retain the former grouping behaviour.
+        key = (
+            pred.get("name"),
+            pred.get("subject"),
+            pred.get("object"),
+            pred.get("occurrence_id"),
+        )
         groups[key].append(pred)
 
     candidates = []
@@ -309,7 +335,7 @@ def build_events(data: dict, max_gap: int = 2, min_confidence: float = 0.3, comp
     for event in candidates:
         if event["confidence"] < min_confidence:
             continue
-        if event["duration"] < min_duration_for(event["category"]):
+        if event["duration"] < min_duration_for_event(event):
             continue
         filtered.append(event)
 

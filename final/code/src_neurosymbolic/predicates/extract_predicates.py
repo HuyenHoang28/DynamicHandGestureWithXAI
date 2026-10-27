@@ -1,9 +1,20 @@
 import argparse
 import json
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
+
+if __package__ is None or __package__ == "":
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+
+from src_neurosymbolic.predicates.temporal_factors import (
+    ScalarSample,
+    detect_click_cycles,
+    detect_pinch_transition,
+    synchronize_two_finger_cycles,
+)
 
 
 SIDES = ["left", "right"]
@@ -31,6 +42,15 @@ IPN_TREND_CONSISTENCY = 0.6
 # that use ``*_threshold`` terminology for the other motion settings.
 DEFAULT_TREND_CONSISTENCY_THRESHOLD = DEFAULT_TREND_CONSISTENCY
 IPN_TREND_CONSISTENCY_THRESHOLD = IPN_TREND_CONSISTENCY
+DEFAULT_CLICK_ACTIVE_THRESHOLD = 0.52
+DEFAULT_CLICK_INACTIVE_THRESHOLD = 0.45
+DEFAULT_CLICK_MIN_CONFIDENCE = 0.3
+DEFAULT_TWO_FINGER_START_DELTA = 3
+DEFAULT_TWO_FINGER_OVERLAP = 0.25
+DEFAULT_PINCH_TRANSITION_EXCURSION = 0.12
+DEFAULT_PINCH_TRANSITION_VALID_RATIO = 0.6
+DEFAULT_TEMPORAL_MAX_GAP = 2
+DEFAULT_PINCH_DOMINANCE_RATIO = 1.1
 FINGERS = {
     "thumb": ["thumb1", "thumb2", "thumb3", "thumb4"],
     "forefinger": ["forefinger1", "forefinger2", "forefinger3", "forefinger4"],
@@ -386,6 +406,210 @@ def normalized_pinch_distance(frame: dict, side: str, min_score: float) -> tuple
         set(scale_evidence + [f"{side}_thumb4", f"{side}_forefinger4"])
     )
     return normalized_distance, trend_confidence, evidence
+
+
+def _stable_hand_scale(frames: list[dict], side: str, min_score: float) -> tuple[float, float] | None:
+    """Return one clip-level palm scale so visibility changes cannot fake a trend."""
+
+    values = [
+        local_hand_scale(frame, side, min_score)
+        for frame in frames
+        if frame.get("valid", False)
+    ]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return float(median(value[0] for value in values)), float(median(value[1] for value in values))
+
+
+def _factor_sample(
+    frame: dict,
+    frame_id: int,
+    first_name: str,
+    second_name: str,
+    scale: float,
+    scale_confidence: float,
+    min_score: float,
+    *,
+    closure_score: bool,
+) -> ScalarSample:
+    first = point(frame, first_name, min_score) if frame.get("valid", False) else None
+    second = point(frame, second_name, min_score) if frame.get("valid", False) else None
+    if first is None or second is None or scale <= 1e-6:
+        return ScalarSample(0.0, False, 0.0, frame_id)
+    ratio = dist(first, second) / scale
+    value = 1.0 / (1.0 + ratio) if closure_score else ratio
+    sample_confidence = (confidence(first, second) + scale_confidence) / 2.0
+    return ScalarSample(value, True, sample_confidence, frame_id)
+
+
+def extract_temporal_factor_predicates(
+    frames: list[dict],
+    min_score: float,
+    *,
+    click_active_threshold: float = DEFAULT_CLICK_ACTIVE_THRESHOLD,
+    click_inactive_threshold: float = DEFAULT_CLICK_INACTIVE_THRESHOLD,
+    click_min_confidence: float = DEFAULT_CLICK_MIN_CONFIDENCE,
+    two_finger_start_delta: int = DEFAULT_TWO_FINGER_START_DELTA,
+    two_finger_overlap: float = DEFAULT_TWO_FINGER_OVERLAP,
+    pinch_min_excursion: float = DEFAULT_PINCH_TRANSITION_EXCURSION,
+    pinch_min_valid_ratio: float = DEFAULT_PINCH_TRANSITION_VALID_RATIO,
+    temporal_max_gap: int = DEFAULT_TEMPORAL_MAX_GAP,
+    pinch_dominance_ratio: float = DEFAULT_PINCH_DOMINANCE_RATIO,
+) -> list[dict]:
+    """Emit V3 click-cycle and dominant-pinch predicates with occurrence IDs.
+
+    Thresholds are intentionally explicit and this function is opt-in at the
+    public extraction boundary. They must be frozen from train/validation
+    before V3 graphs are used for evaluation.
+    """
+
+    predicates = []
+    for side in SIDES:
+        scale_data = _stable_hand_scale(frames, side, min_score)
+        if scale_data is None:
+            continue
+        scale, scale_confidence = scale_data
+        frame_ids = [int(frame.get("frame_id", index)) for index, frame in enumerate(frames)]
+        index_samples = [
+            _factor_sample(
+                frame,
+                frame_id,
+                f"{side}_forefinger4",
+                f"{side}_forefinger1",
+                scale,
+                scale_confidence,
+                min_score,
+                closure_score=True,
+            )
+            for frame, frame_id in zip(frames, frame_ids)
+        ]
+        middle_samples = [
+            _factor_sample(
+                frame,
+                frame_id,
+                f"{side}_middle_finger4",
+                f"{side}_middle_finger1",
+                scale,
+                scale_confidence,
+                min_score,
+                closure_score=True,
+            )
+            for frame, frame_id in zip(frames, frame_ids)
+        ]
+        pinch_samples = [
+            _factor_sample(
+                frame,
+                frame_id,
+                f"{side}_thumb4",
+                f"{side}_forefinger4",
+                scale,
+                scale_confidence,
+                min_score,
+                closure_score=False,
+            )
+            for frame, frame_id in zip(frames, frame_ids)
+        ]
+        index_cycles = detect_click_cycles(
+            index_samples,
+            active_threshold=click_active_threshold,
+            inactive_threshold=click_inactive_threshold,
+            minimum_confidence=click_min_confidence,
+            maximum_gap_frames=temporal_max_gap,
+        )
+        middle_cycles = detect_click_cycles(
+            middle_samples,
+            active_threshold=click_active_threshold,
+            inactive_threshold=click_inactive_threshold,
+            minimum_confidence=click_min_confidence,
+            maximum_gap_frames=temporal_max_gap,
+        )
+        for cycle in index_cycles:
+            predicates.append(
+                {
+                    "name": "index_click_cycle",
+                    "subject": f"{side}_hand",
+                    "object": None,
+                    "start_frame": cycle.start_frame_id,
+                    "end_frame": cycle.end_frame_id,
+                    "confidence": round(cycle.confidence, 6),
+                    "evidence_keypoints": [
+                        f"{side}_hand_root",
+                        f"{side}_middle_finger1",
+                        f"{side}_forefinger1",
+                        f"{side}_forefinger4",
+                    ],
+                    "occurrence_id": f"{side}:index_click:{cycle.start_frame_id}:{cycle.end_frame_id}",
+                    "factor_version": "temporal_factor_v3",
+                }
+            )
+        synchronized = synchronize_two_finger_cycles(
+            index_cycles,
+            middle_cycles,
+            max_start_delta_frames=two_finger_start_delta,
+            minimum_overlap_ratio=two_finger_overlap,
+        )
+        for match in synchronized.matches:
+            start = min(match.left.start_frame_id, match.right.start_frame_id)
+            end = max(match.left.end_frame_id, match.right.end_frame_id)
+            predicates.append(
+                {
+                    "name": "two_finger_click_cycle",
+                    "subject": f"{side}_hand",
+                    "object": None,
+                    "start_frame": start,
+                    "end_frame": end,
+                    "confidence": round(
+                        min(match.left.confidence, match.right.confidence) * match.overlap_ratio,
+                        6,
+                    ),
+                    "evidence_keypoints": [
+                        f"{side}_hand_root",
+                        f"{side}_middle_finger1",
+                        f"{side}_middle_finger4",
+                        f"{side}_forefinger1",
+                        f"{side}_forefinger4",
+                    ],
+                    "occurrence_id": f"{side}:two_finger_click:{start}:{end}",
+                    "factor_version": "temporal_factor_v3",
+                }
+            )
+        transition = detect_pinch_transition(
+            pinch_samples,
+            minimum_valid_ratio=pinch_min_valid_ratio,
+            minimum_confidence=min_score,
+            minimum_excursion=pinch_min_excursion,
+            maximum_gap_frames=temporal_max_gap,
+            minimum_dominance_ratio=pinch_dominance_ratio,
+        )
+        if transition.direction != "unknown":
+            predicates.append(
+                {
+                    "name": f"pinch_{transition.direction}",
+                    "subject": f"{side}_hand",
+                    "object": None,
+                    "start_frame": transition.start_frame_id,
+                    "end_frame": transition.end_frame_id,
+                    "confidence": round(transition.confidence, 6),
+                    "evidence_keypoints": [
+                        f"{side}_hand_root",
+                        f"{side}_middle_finger1",
+                        f"{side}_thumb4",
+                        f"{side}_forefinger4",
+                    ],
+                    "occurrence_id": (
+                        f"{side}:pinch_{transition.direction}:"
+                        f"{transition.start_frame_id}:{transition.end_frame_id}"
+                    ),
+                    "factor_version": "temporal_factor_v3",
+                    "factor_quality": round(transition.quality, 6),
+                    "factor_excursion": round(transition.excursion, 6),
+                }
+            )
+    return sorted(
+        predicates,
+        key=lambda item: (item["start_frame"], item["end_frame"], item["name"], item["subject"]),
+    )
 
 
 def direction_changes(series: list[float], min_abs_delta: float) -> int:
@@ -969,6 +1193,16 @@ def build_predicate_config(
     pinch_threshold: float | None = None,
     trend_consistency: float | None = DEFAULT_TREND_CONSISTENCY,
     trend_consistency_threshold: float | None = None,
+    enable_temporal_factors: bool = False,
+    click_active_threshold: float = DEFAULT_CLICK_ACTIVE_THRESHOLD,
+    click_inactive_threshold: float = DEFAULT_CLICK_INACTIVE_THRESHOLD,
+    click_min_confidence: float = DEFAULT_CLICK_MIN_CONFIDENCE,
+    two_finger_start_delta: int = DEFAULT_TWO_FINGER_START_DELTA,
+    two_finger_overlap: float = DEFAULT_TWO_FINGER_OVERLAP,
+    pinch_transition_excursion: float = DEFAULT_PINCH_TRANSITION_EXCURSION,
+    pinch_transition_valid_ratio: float = DEFAULT_PINCH_TRANSITION_VALID_RATIO,
+    temporal_max_gap: int = DEFAULT_TEMPORAL_MAX_GAP,
+    pinch_dominance_ratio: float = DEFAULT_PINCH_DOMINANCE_RATIO,
 ) -> dict:
     resolved_hand_threshold = motion_threshold if hand_motion_threshold is None else hand_motion_threshold
     resolved_finger_threshold = motion_threshold if finger_motion_threshold is None else finger_motion_threshold
@@ -978,8 +1212,8 @@ def build_predicate_config(
             raise ValueError("specify only one of trend_consistency and trend_consistency_threshold")
         trend_consistency = trend_consistency_threshold
     resolved_trend_consistency = validate_trend_consistency(trend_consistency)
-    return {
-        "version": "ipn_predicate_v2",
+    config = {
+        "version": "ipn_predicate_v3" if enable_temporal_factors else "ipn_predicate_v2",
         "min_score": float(min_score),
         "window_size": int(window_size),
         "thresholds": {
@@ -995,6 +1229,23 @@ def build_predicate_config(
         "pinch_distance": "thumb4_forefinger4_distance_divided_by_median_local_palm_scale",
         "visibility": "keypoint_score_must_meet_min_score",
     }
+    if enable_temporal_factors:
+        config["temporal_factors"] = {
+            "version": "temporal_factor_v3",
+            "click_signal": "one_over_one_plus_tip_to_knuckle_distance_over_clip_median_palm_scale",
+            "click_active_threshold": float(click_active_threshold),
+            "click_inactive_threshold": float(click_inactive_threshold),
+            "click_min_confidence": float(click_min_confidence),
+            "two_finger_start_delta": int(two_finger_start_delta),
+            "two_finger_overlap": float(two_finger_overlap),
+            "pinch_signal": "thumb_index_distance_over_clip_median_palm_scale",
+            "pinch_transition_excursion": float(pinch_transition_excursion),
+            "pinch_transition_valid_ratio": float(pinch_transition_valid_ratio),
+            "temporal_max_gap": int(temporal_max_gap),
+            "pinch_dominance_ratio": float(pinch_dominance_ratio),
+            "status": "experimental_train_validation_only",
+        }
+    return config
 
 
 def extract_predicates(
@@ -1007,6 +1258,16 @@ def extract_predicates(
     pinch_threshold: float | None = None,
     trend_consistency: float | None = DEFAULT_TREND_CONSISTENCY,
     trend_consistency_threshold: float | None = None,
+    enable_temporal_factors: bool = False,
+    click_active_threshold: float = DEFAULT_CLICK_ACTIVE_THRESHOLD,
+    click_inactive_threshold: float = DEFAULT_CLICK_INACTIVE_THRESHOLD,
+    click_min_confidence: float = DEFAULT_CLICK_MIN_CONFIDENCE,
+    two_finger_start_delta: int = DEFAULT_TWO_FINGER_START_DELTA,
+    two_finger_overlap: float = DEFAULT_TWO_FINGER_OVERLAP,
+    pinch_transition_excursion: float = DEFAULT_PINCH_TRANSITION_EXCURSION,
+    pinch_transition_valid_ratio: float = DEFAULT_PINCH_TRANSITION_VALID_RATIO,
+    temporal_max_gap: int = DEFAULT_TEMPORAL_MAX_GAP,
+    pinch_dominance_ratio: float = DEFAULT_PINCH_DOMINANCE_RATIO,
 ) -> dict:
     """Extract predicates while retaining the legacy ``motion_threshold`` API.
 
@@ -1026,6 +1287,16 @@ def extract_predicates(
         pinch_threshold=pinch_threshold,
         trend_consistency=trend_consistency,
         trend_consistency_threshold=trend_consistency_threshold,
+        enable_temporal_factors=enable_temporal_factors,
+        click_active_threshold=click_active_threshold,
+        click_inactive_threshold=click_inactive_threshold,
+        click_min_confidence=click_min_confidence,
+        two_finger_start_delta=two_finger_start_delta,
+        two_finger_overlap=two_finger_overlap,
+        pinch_transition_excursion=pinch_transition_excursion,
+        pinch_transition_valid_ratio=pinch_transition_valid_ratio,
+        temporal_max_gap=temporal_max_gap,
+        pinch_dominance_ratio=pinch_dominance_ratio,
     )
     thresholds = predicate_config["thresholds"]
     resolved_hand_threshold = thresholds["hand_motion_threshold"]
@@ -1060,6 +1331,28 @@ def extract_predicates(
     )
     sweep = extract_sweep(frames, min_score)
     predicates = merge_adjacent(spatial + motion + finger_motion + coordination + sweep)
+    if enable_temporal_factors:
+        predicates += extract_temporal_factor_predicates(
+            frames,
+            min_score,
+            click_active_threshold=click_active_threshold,
+            click_inactive_threshold=click_inactive_threshold,
+            click_min_confidence=click_min_confidence,
+            two_finger_start_delta=two_finger_start_delta,
+            two_finger_overlap=two_finger_overlap,
+            pinch_min_excursion=pinch_transition_excursion,
+            pinch_min_valid_ratio=pinch_transition_valid_ratio,
+            temporal_max_gap=temporal_max_gap,
+            pinch_dominance_ratio=pinch_dominance_ratio,
+        )
+        predicates.sort(
+            key=lambda item: (
+                item["start_frame"],
+                item["end_frame"],
+                item["name"],
+                item["subject"],
+            )
+        )
     return {
         "video_id": data.get("video_id", ""),
         "source_path": data.get("source_path", ""),
@@ -1093,6 +1386,20 @@ def parse_args() -> argparse.Namespace:
         help="Minimum signed movement / total variation ratio in [0, 1]; 0 preserves endpoint-only trends.",
     )
     parser.add_argument("--pretty", action="store_true")
+    parser.add_argument(
+        "--enable-temporal-factors",
+        action="store_true",
+        help="Emit experimental V3 click-cycle and dominant-pinch predicates.",
+    )
+    parser.add_argument("--click-active-threshold", type=float, default=DEFAULT_CLICK_ACTIVE_THRESHOLD)
+    parser.add_argument("--click-inactive-threshold", type=float, default=DEFAULT_CLICK_INACTIVE_THRESHOLD)
+    parser.add_argument("--click-min-confidence", type=float, default=DEFAULT_CLICK_MIN_CONFIDENCE)
+    parser.add_argument("--two-finger-start-delta", type=int, default=DEFAULT_TWO_FINGER_START_DELTA)
+    parser.add_argument("--two-finger-overlap", type=float, default=DEFAULT_TWO_FINGER_OVERLAP)
+    parser.add_argument("--pinch-transition-excursion", type=float, default=DEFAULT_PINCH_TRANSITION_EXCURSION)
+    parser.add_argument("--pinch-transition-valid-ratio", type=float, default=DEFAULT_PINCH_TRANSITION_VALID_RATIO)
+    parser.add_argument("--temporal-max-gap", type=int, default=DEFAULT_TEMPORAL_MAX_GAP)
+    parser.add_argument("--pinch-dominance-ratio", type=float, default=DEFAULT_PINCH_DOMINANCE_RATIO)
     return parser.parse_args()
 
 
@@ -1108,6 +1415,16 @@ def main() -> None:
         finger_motion_threshold=args.finger_motion_threshold,
         pinch_threshold=args.pinch_threshold,
         trend_consistency=args.trend_consistency,
+        enable_temporal_factors=args.enable_temporal_factors,
+        click_active_threshold=args.click_active_threshold,
+        click_inactive_threshold=args.click_inactive_threshold,
+        click_min_confidence=args.click_min_confidence,
+        two_finger_start_delta=args.two_finger_start_delta,
+        two_finger_overlap=args.two_finger_overlap,
+        pinch_transition_excursion=args.pinch_transition_excursion,
+        pinch_transition_valid_ratio=args.pinch_transition_valid_ratio,
+        temporal_max_gap=args.temporal_max_gap,
+        pinch_dominance_ratio=args.pinch_dominance_ratio,
     )
     write_json(out, args.output, args.pretty)
     print(f"Saved predicates: {args.output}")
