@@ -6,13 +6,14 @@ Tài liệu này tổng hợp từ các note đã có trong `docs/` (nguồn ở
 
 ## 1. Tóm tắt
 
-1. **Neural baseline IPN-13:** cấu hình C (Transformer d192, 4 lớp, 8 head, masked-mean pooling, vận tốc keypoint, không frame masking) đạt validation accuracy **89,13%** và macro-F1 **83,76%** (589 clip). Bốn lớp click G01, G02, G08, G09 vẫn là điểm yếu (F1 0,63–0,70).
+1. **Neural baseline IPN-13:** cấu hình C (Transformer d192, 4 lớp, 8 head, masked-mean pooling, vận tốc keypoint, không frame masking) đạt validation accuracy **89,13%** và macro-F1 **83,76%** (589 clip) ở seed 42, là seed tốt nhất trong ba seed (trung bình 87,3% / 80,8%, xem điểm 7). Bốn lớp click G01, G02, G08, G09 vẫn là điểm yếu (F1 0,63–0,70).
 2. **Symbolic thuần luật trên IPN** chưa đủ làm classifier: accuracy thô 13 lớp khoảng **23%** (macro-F1 9%). Quy trình audit phát hiện và gỡ một regression (role cứng); override theo cặp lớp với neural C chưa có cấu hình nào có lợi nên được giữ tắt.
 3. **DATE-27 (1.229 clip test):** checkpoint V4 chọn theo validation đạt Final **94,87%** (macro-F1 94,52%), KG head 95,04%, neural head 94,63%; neural-only độc lập 95,28%. Final cao hơn ProtoGCN (93,28%) và DATE Transformer (94,22%) trong paper, nhưng thấp hơn mean Proposed Fusion của paper (96,40%) và chưa vượt neural-only.
 4. **Cảnh báo về paper:** run 3 của cột Proposed (96,18%) trùng đúng accuracy của `best_test.pt` (checkpoint chọn theo test). Cần xác minh provenance 10 run trước khi dùng 96,40% làm claim tái lập.
-5. **IPN-13 test (run 2026-10-24, 1.101 clip):** neural-only C đạt **84,65%** accuracy / **77,24%** macro-F1; V4 final chỉ đạt **82,56% / 73,84%**, bằng đúng checkpoint khởi tạo của nó (không vận tốc) và `kg_logits` có net −8 clip. Chưa có bằng chứng nhánh symbolic giúp trên IPN.
-6. **Phát hiện chính từ audit:** vận tốc đóng góp +2,1 điểm accuracy và +3,6 điểm macro-F1 (recall G08 từ 36,5% lên 71,2%), nhưng V4 không dùng được vận tốc nên bị mất lợi thế này; lỗi còn lại tập trung ở các cặp đếm click và chênh lệch giữa camera (accuracy 77% đến 90%).
-7. **Đã triển khai (chưa chạy trên Colab):** V4 nhận vận tốc, đặc trưng hình học bàn tay, augmentation thời gian và hình học, ensemble nhiều seed, notebook sweep chọn theo validation. 153 test pass; tương thích ngược DATE-27 đã kiểm chứng.
+5. **IPN-13 test (run 2026-10-24, 1.101 clip):** neural-only C (seed 42, seed tốt nhất) đạt **84,65%** accuracy / **77,24%** macro-F1; V4 final chỉ đạt **82,56% / 73,84%**, bằng đúng checkpoint khởi tạo của nó (không vận tốc) và `kg_logits` có net −8 clip. Chưa có bằng chứng nhánh symbolic giúp trên IPN.
+6. **Phát hiện chính từ audit:** lỗi còn lại tập trung ở các cặp đếm click và chênh lệch giữa camera (accuracy của C theo camera 77% đến 90%). So sánh có/không vận tốc (+2,1 điểm accuracy, G08 recall 36,5% lên 71,2%) chỉ là một seed và nằm trong dao động giữa các seed (xem điểm 7).
+7. **Sweep ba seed (2026-10-27):** neural C gốc là seed tốt nhất. Ba seed của C: validation macro-F1 80,78 ± 2,71, test accuracy 82,6% (81,0 đến 84,7). **Ensemble ba seed đạt test 85,01% accuracy, 77,36% macro-F1 (+2,4 và +3,2 điểm so với trung bình đơn)**, là cải thiện duy nhất đã đo được. `--hand-features` chưa có bằng chứng giúp (validation macro-F1 79,5 ± 1,3 so với 80,8 ± 2,7; nằm trong nhiễu). V4 final (82,56%) gần bằng trung bình ba seed của C (82,59%), nên chưa kết luận V4 kém hơn hay hơn neural.
+8. **Đã triển khai:** V4 nhận vận tốc, đặc trưng hình học bàn tay, augmentation thời gian và hình học, ensemble nhiều seed, notebook sweep chọn theo validation (đã chạy cho `c_ref` và `hand`; `aug`, `hand_aug` chưa). Bộ test đầy đủ 176 pass; tương thích ngược DATE-27 đã kiểm chứng.
 
 ## 2. Bối cảnh và dữ liệu
 
@@ -203,7 +204,7 @@ F1 từng lớp trên test (C, V4 neural, V4 KG, V4 final): B0A 0,951 / 0,954 / 
 
 Đọc kết quả:
 
-- V4 final **bằng đúng** checkpoint khởi tạo của nó (82,56%) và thấp hơn C 2,1 điểm. `kg_logits` sửa 17 lỗi của neural head nhưng gây 25 lỗi mới (net −8). **Không có bằng chứng symbolic giúp trên IPN** trong thiết lập này.
+- V4 final **bằng đúng** checkpoint khởi tạo của nó (82,56%) và thấp hơn C seed 42 2,1 điểm (nhưng gần bằng trung bình ba seed của C trên test, 82,6%; xem mục 1, điểm 7). `kg_logits` sửa 17 lỗi của neural head nhưng gây 25 lỗi mới (net −8). **Không có bằng chứng symbolic giúp trên IPN** trong thiết lập này.
 - KG head hơn rõ nhất ở G09 (9 clip được sửa, 1 clip bị hại) và G08 (4 sửa, 2 hại), tức đúng ở các lớp double click mà template nhắm tới; nhưng bị hại ở G01 (1 sửa, 6 hại), G02 (1 và 6) và G11 (0 và 4), nên tổng thể net −8.
 - Nguyên nhân chính của khoảng cách với C là V4 bị mất vận tốc (neural không vận tốc thua C 2,1 điểm accuracy, 3,6 điểm macro-F1; G08 recall 36,5% so với 71,2%), không phải do template.
 - Gate (trọng số của neural) trên validation từ 0,82 xuống 0,65; validation dao động 80–86% giữa các epoch và huấn luyện dừng ở epoch 17 (patience 5).

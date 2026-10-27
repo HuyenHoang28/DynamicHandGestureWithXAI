@@ -154,3 +154,20 @@ V4 final bằng đúng checkpoint khởi tạo và thấp hơn C; `kg_logits` s�
 ### Validation
 
 `pytest`: 153 passed; smoke huấn luyện/đánh giá neural-only, huấn luyện V4 (có `--freeze-neural-epochs`) và đánh giá V4 với các cờ mới trên dữ liệu DATE nhỏ; các code cell của hai notebook qua `ast.parse`; notebook sweep chạy end-to-end cục bộ.
+
+## Cập nhật 2026-10-27: V4 nhiều seed, so sánh cặp với checkpoint khởi tạo
+
+### Vì sao
+Mục tiêu của dự án là đầu symbolic (`kg_logits`) **hỗ trợ dự đoán** trong kiến trúc V4. Lần chạy một seed không phân biệt được tác dụng của đầu symbolic với dao động giữa các seed (macro-F1 validation của neural C có độ lệch chuẩn khoảng 2,7 điểm; seed 42 là seed tốt nhất). Phép so sánh đúng là **cặp theo seed**: V4 khởi tạo từ `c_ref_seed<seed>` được so với chính checkpoint khởi tạo đó, cùng clip, cùng seed.
+
+### Thay đổi
+- `notebooks/IPN13_KG_Logits_V4_MultiSeed_Colab.ipynb`: với mỗi seed (42, 123, 3407) khởi tạo V4 từ `outputs/ipn13_neural_sweep/c_ref_seed<seed>/best.pt` (cấu hình C: vận tốc, masked_mean), đóng băng encoder 3 epoch, augmentation như C, patience 12; đánh giá validation cho `neural`, `kg`, `final` của V4 và cho checkpoint khởi tạo; bảng Δ(final − init) theo seed, số clip KG sửa và hại, gate, F1 các lớp click và pinch; ensemble V4 (final) so với ensemble các checkpoint khởi tạo; test khóa mặc định (`RUN_LOCKED_TEST=False`, nếu bật là lần xem thứ N, exploratory); ZIP duy nhất, từ chối ghi đè; run dở dang đổi tên chứ không xóa. Kết luận in ra chỉ là "có dấu hiệu giúp" khi mọi seed đều tăng macro-F1 và mức tăng trung bình lớn hơn 0,005.
+- `test_cross_attention_v2.py`: thêm `--save-logits` ghi `test_logits.pt` (logits thô của `final`, `neural`, `kg` và thứ tự clip). Mặc định tắt; không đổi đầu ra hiện có.
+- `scripts/ensemble_v4_logits.py`: trung bình xác suất softmax của một nhánh qua nhiều checkpoint V4; từ chối khi các member đánh giá khác clip hoặc khác thứ tự.
+- Notebook này không ghim `REPO_COMMIT` (cần code mới) và không so sánh mã dựng graph theo file (đầu nhánh có mã temporal factor mặc định tắt; đã kiểm tra graph dựng giống hệt từng byte với `e817f16` trên 40 clip thật). Nó chỉ dựng test graph khi bật test.
+
+### Compatibility và an toàn
+Chỉ thêm tùy chọn và script mới; checkpoint và đầu ra cũ không đổi. Train không dùng test; `best.pt` chọn theo macro-F1 validation; kiểm tra kiến trúc từng checkpoint khởi tạo trước khi nạp.
+
+### Validation
+`tests/test_v4_ensemble.py` (4 test) và bộ test đầy đủ; chạy thử các ô huấn luyện, đánh giá, bảng cặp, ensemble, bỏ qua test và đóng gói ZIP trên dữ liệu DATE nhỏ cục bộ (2 seed, kiến trúc nhỏ); `--save-logits` và ensemble chạy từ đầu đến cuối. Chưa chạy trên IPN thật (cần Colab).

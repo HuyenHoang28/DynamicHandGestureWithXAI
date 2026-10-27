@@ -4,6 +4,8 @@ Nguồn dữ liệu: gói kết quả `results/experiments/ipn13/artifact_zips/2
 
 **Lưu ý phương pháp quan trọng:** test IPN đã bị mở hai lần (neural-only ở các lần trước và lần chạy này). Các phát hiện bên dưới dùng test để *chẩn đoán lỗi* (không sinh quyết định cấu hình). Mọi lựa chọn cải thiện sau này phải dựa trên validation nhiều seed; nếu xem test lần nữa thì chỉ là bằng chứng exploratory.
 
+> **Hiệu chỉnh 2026-10-27.** Kết quả sweep ba seed (mục 7) cho thấy seed 42, tức là neural C gốc, là seed **tốt nhất** trong ba seed, nên các so sánh bên dưới với "C" (mục 1 và 3.1) là so với một seed may mắn. Các kết luận "V4 thấp hơn C 2,1 điểm" và "vận tốc đóng góp +2,1 điểm accuracy" nằm trong biên dao động giữa các seed và **chưa thể coi là đã chứng minh**. Xem mục 7.
+
 ## 1. Kết quả của lần chạy (1.101 clip test)
 
 | Mô hình | Accuracy | Macro-F1 |
@@ -107,6 +109,50 @@ Kiểm chứng cụ thể: adapter V4 cho logits **giống hệt** `NeuralOnlyCl
 1. Commit và push code mới lên nhánh `HuyenHoang` (notebook clone từ GitHub).
 2. Chạy `notebooks/IPN13_Neural_Improvement_Sweep_Colab.ipynb` (`RUN_LOCKED_TEST=False`). Gửi lại ZIP trong `MyDrive/ipn-extract-data/runs/ipn13_neural_sweep/`.
 3. Dựa trên bảng validation, chọn biến thể; sau đó mới quyết định có xem test lần nữa không (và gọi đúng tên là lần xem thứ hai).
+
+## 7. Cập nhật 2026-10-27: kết quả sweep ba seed
+
+Nguồn: `results/experiments/ipn13/artifact_zips/20261026T083440Z-0eb56d3bd5.zip` (commit `3901f74`) và các thư mục run `neural_sweep_upload/` (`c_ref` và `hand`, mỗi biến thể ba seed). ZIP chỉ chứa `c_ref` (kèm ensemble và test); `hand` đã train đủ ba seed nhưng chưa được đánh giá bằng notebook, nên số của `hand` lấy từ `history.json` (epoch tốt nhất theo macro-F1 validation). Các biến thể `aug` và `hand_aug` chưa chạy.
+
+### 7.1 Neural C dao động mạnh giữa các seed [Đã đo]
+
+| Seed | Best epoch | Val acc | Val macro-F1 | Test acc | Test macro-F1 |
+|---:|---:|---:|---:|---:|---:|
+| 42 (C gốc) | 48 | 89,13% | 83,76% | 84,65% | 77,24% |
+| 123 | 24 | 86,08% | 78,47% | 81,02% | 72,24% |
+| 3407 | 28 | 86,76% | 80,13% | 82,11% | 73,02% |
+| **Trung bình ± sd** | | 87,32 ± 1,60 | **80,78 ± 2,71** | 82,59 | 74,17 |
+| Ensemble 3 seed | | 89,47% | 83,95% | **85,01%** | **77,36%** |
+
+- Mốc "C = 89,13% validation, 84,65% test" là seed tốt nhất. Mốc công bằng là trung bình ba seed: validation 87,3% / macro-F1 80,8%, test 82,6% / 74,2%. Seed 42 cũng tốt nhất trên test, nên việc chọn theo validation ở đây không sai, chỉ là seed hơn hẳn hai seed còn lại.
+- F1 từng lớp trên validation dao động 3 đến 7 điểm giữa các seed ở các cử chỉ (mỗi lớp 28 clip): ví dụ G03 từ 0,80 đến 0,95, G07 từ 0,76 đến 0,89, G08 từ 0,60 đến 0,70. B0A và B0B ổn định (sd 0,002).
+- Best epoch từ 24 đến 48 và dừng sớm ở 36 và 40 epoch (patience 12), nên early stopping trên validation nhiễu cắt khác nhau theo seed.
+
+### 7.2 Ensemble là cải thiện duy nhất đã đo được [Đã đo]
+
+Ensemble ba seed (trung bình xác suất) so với trung bình đơn: validation +2,2 điểm accuracy và +3,2 điểm macro-F1 (89,47% / 83,95% so với 87,32% / 80,78%), test +2,4 điểm accuracy và +3,2 điểm macro-F1 (85,01% / 77,36% so với 82,59% / 74,17%). So với seed tốt nhất chỉ +0,4 điểm accuracy và +0,1 điểm macro-F1, tức ensemble đạt mức của seed tốt nhất nhưng **ổn định hơn** và không phụ thuộc may rủi chọn seed. Số test là lần xem thứ ba của test IPN, chỉ là bằng chứng exploratory.
+
+### 7.3 `--hand-features` chưa có bằng chứng giúp [Đã đo, một phần]
+
+Theo `history.json` (epoch tốt nhất theo macro-F1 validation): `hand` đạt macro-F1 79,48 ± 1,32 và accuracy 86,08 ± 0,17 (seed 123: 80,89; seed 3407: 79,27; seed 42: 78,27), so với `c_ref` 80,78 ± 2,71 và 87,32 ± 1,60. Chênh lệch −1,3 điểm macro-F1 và −1,2 điểm accuracy nhỏ hơn độ lệch chuẩn giữa các seed, nên **không kết luận được là tốt hơn hay kém hơn**; chỉ thấy phương sai giữa các seed nhỏ hơn. Chưa có F1 từng lớp của `hand` (chưa chạy bước đánh giá) nên chưa biết các lớp click có cải thiện không.
+
+### 7.4 Hiệu chỉnh các kết luận trước
+
+| Kết luận ở mục 1 và 3 | Sau sweep |
+|---|---|
+| V4 final (82,56%) thấp hơn C (84,65%) 2,1 điểm | 82,56% gần bằng trung bình ba seed của C trên test (82,59%): **không có bằng chứng V4 kém hơn neural**; cũng không có bằng chứng nó hơn. KG vẫn net −8 clip trên test ở lần chạy đó. |
+| Vận tốc đóng góp +2,1 điểm accuracy, +3,6 điểm macro-F1 | So sánh một seed (42, seed tốt nhất) với một run không vận tốc; biên giữa các seed của C trên test là 81,0% đến 84,7% (3,6 điểm). Chênh lệch **nằm trong dao động seed**. Recall G08 từ 36,5% lên 71,2% rất lớn nhưng chưa biết dao động của chỉ số này theo seed. Cần ba seed không vận tốc để kết luận. |
+| "Mốc neural baseline = C = 84,65%" | Dùng trung bình ba seed (82,6%) hoặc ensemble (85,0%) làm mốc. |
+
+Nhận định còn nguyên: lỗi tập trung ở các cặp đếm click và pinch, và accuracy khác nhau theo camera (mục 3.2 và 3.3), vì đó là phân tích trên một mô hình nhưng dựa trên cấu trúc lỗi, không phải chênh lệch nhỏ giữa hai mô hình.
+
+### 7.5 Việc nên làm tiếp (theo bằng chứng)
+
+1. **Dùng ensemble nhiều seed làm neural baseline** và báo cáo trung bình ± sd. Đây là cách duy nhất đã đo được là tăng chỉ số một cách ổn định.
+2. **Chạy bước đánh giá cho `hand`** (và `aug`, `hand_aug` nếu muốn) bằng cùng notebook, để có ensemble và F1 từng lớp trên validation; chỉ kết luận khi chênh lệch lớn hơn dao động giữa các seed. Nếu cần tiết kiệm, chỉ cần chạy phần đánh giá vì checkpoint `hand` đã có.
+3. **Ablation vận tốc ba seed** (cùng cấu hình C, `--disable-motion-features`) và **V4 ba seed** nếu muốn so V4 với neural một cách có ý nghĩa; một seed không đủ.
+4. **Tăng số seed của ensemble** (5 seed) và **huấn luyện trên train+validation** để giảm dao động và tăng đa dạng subject.
+5. Các hướng ở mục 5 (nhãn phân rã đếm click, validation theo subject-grouped K-fold) vẫn hợp lý nhưng phải được đánh giá bằng nhiều seed, vì dao động giữa seed (2,7 điểm macro-F1) lớn hơn hầu hết cải thiện nhỏ.
 
 ## Validation của tài liệu
 

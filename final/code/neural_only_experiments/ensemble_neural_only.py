@@ -132,10 +132,17 @@ def run(args: argparse.Namespace) -> dict:
     args.output.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     with args.output.with_name("ensemble_predictions.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["path", "true_id", "true_label", "pred_id", "pred_label", "confidence"])
+        # top_labels/top_probs match test_neural_only.py so downstream tools (eval_pair_residual.py) read both formats.
+        writer.writerow(["path", "true_id", "true_label", "pred_id", "pred_label", "confidence", "top_labels", "top_probs"])
         for path, true_id, pred_id, row in zip(reference_paths, reference_labels, predictions, probabilities):
+            top = row.topk(min(5, row.numel()))
             writer.writerow(
-                [path, true_id, label_names.get(true_id, str(true_id)), pred_id, label_names.get(pred_id, str(pred_id)), f"{float(row[pred_id]):.6f}"]
+                [
+                    path, true_id, label_names.get(true_id, str(true_id)), pred_id, label_names.get(pred_id, str(pred_id)),
+                    f"{float(row[pred_id]):.6f}",
+                    " ".join(label_names.get(int(index), str(int(index))) for index in top.indices),
+                    " ".join(f"{float(value):.6f}" for value in top.values),
+                ]
             )
     if args.save_probabilities:
         torch.save(

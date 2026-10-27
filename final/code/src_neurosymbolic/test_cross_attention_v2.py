@@ -201,6 +201,8 @@ def main(args: argparse.Namespace) -> None:
     )
 
     labels = []
+    logit_store = {branch: [] for branch in BRANCHES}
+    path_store = []
     predictions = {branch: [] for branch in BRANCHES}
     prediction_rows = []
     category_counts = Counter()
@@ -233,6 +235,10 @@ def main(args: argparse.Namespace) -> None:
             "neural": outputs["neural_logits"],
             "kg": outputs["kg_logits"],
         }
+        if args.save_logits:
+            for branch, value in logits.items():
+                logit_store[branch].append(value.detach().cpu())
+            path_store.extend(batch["path"])
         batch_predictions = {branch: value.argmax(dim=1) for branch, value in logits.items()}
         confidences = {
             branch: torch.softmax(value, dim=1).max(dim=1).values
@@ -403,6 +409,12 @@ def main(args: argparse.Namespace) -> None:
         json.dumps(confusion_matrices, indent=2),
         encoding="utf-8",
     )
+    if args.save_logits:
+        # Raw logits per branch so several checkpoints can be ensembled (scripts/ensemble_v4_logits.py).
+        torch.save(
+            {"paths": path_store, "labels": labels, "logits": {b: torch.cat(v) for b, v in logit_store.items()}},
+            output_path.with_name("test_logits.pt"),
+        )
     with predictions_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=prediction_rows[0].keys())
         writer.writeheader()
@@ -447,6 +459,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--eval-branch", choices=BRANCHES, default="final")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--save-logits", action="store_true", help="Also write test_logits.pt with raw final/neural/kg logits.")
     return parser.parse_args()
 
 

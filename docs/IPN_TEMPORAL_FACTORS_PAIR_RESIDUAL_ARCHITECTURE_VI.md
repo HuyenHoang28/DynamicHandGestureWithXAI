@@ -164,3 +164,82 @@ Validation code: focused suite `30 passed`; full repository suite `176 passed`, 
 4. Chạy tất cả cell và gửi ZIP trong `MyDrive/ipn-extract-data/runs/ipn13_temporal_factor_v3/` để audit.
 5. Không dùng selected config cho pair-residual nếu report có `feasible=false`.
 
+## 11. Cập nhật 2026-10-27: lát cắt pair-residual tất định
+
+### Thay đổi
+
+- `final/code/src_neurosymbolic/pair_residual.py`: `apply_pair_residual` thực hiện đúng hợp đồng mục 6 như một lớp hậu xử lý trên logits của neural. Chỉ hành động khi neural top-2 đúng bằng một cặp cấu hình, neural margin nhỏ hơn ngưỡng, và factor cho đáp án chắc (khác `unknown`, thuộc cặp, quality đủ lớn). Khi đó chỉ hai logit đổi: `logit[a] += alpha·q·s`, `logit[b] −= alpha·q·s` (s = +1 nếu factor chọn lớp thứ nhất của cặp, −1 nếu chọn lớp thứ hai); mọi logit khác giữ nguyên. `alpha = 0` là phép đồng nhất, tái hiện đúng neural. Kèm `correction_effect` đếm beneficial/harmful/neutral/net.
+- `scripts/extract_pair_factors.py`: tính quyết định của **cả ba họ factor cho mọi clip** (kể cả B0A, B0B và các cử chỉ khác) bằng `selected_config.json`, **không dùng nhãn thật**. Lý do: `calibrate_ipn_temporal_factors.py` chỉ chấm các clip thuộc sáu lớp mục tiêu và chọn họ factor theo nhãn thật, nên không thể dùng để mô phỏng pair-residual thật. CLI chỉ nhận `--split train|val`, không có tùy chọn test.
+- `scripts/eval_pair_residual.py`: nhận CSV dự đoán neural (`top_labels`/`top_probs`, định dạng của `test_neural_only.py` và nay cả `ensemble_predictions.csv`) cùng CSV factor; từ chối mọi dòng factor có split không phải `train`/`val`; quét `alpha`, margin, quality floor và báo cáo beneficial/harmful/net, accuracy và macro-F1 trước và sau, theo từng cặp.
+- `ensemble_neural_only.py`: `ensemble_predictions.csv` có thêm hai cột `top_labels`, `top_probs` (cột cũ không đổi).
+- `notebooks/IPN13_KG_Logits_V4_FromC_Colab.ipynb`: ghim `REPO_COMMIT` vào `3901f74`, vì kiểm tra "mã dựng graph không đổi" so sánh theo file và đầu nhánh đã có thêm mã temporal factor (mặc định tắt).
+
+### Điều chưa làm (có chủ ý)
+
+- Pair head **học** từ factor label (mục 6 đoạn cuối): bản này chọn `alpha`, margin và quality bằng lưới trên validation thay vì huấn luyện. Chỉ nên làm khi bản tất định cho net dương ổn định.
+- Bật template V3 trong production: cần `selected_config.json` đã hiệu chỉnh trên train/validation đầy đủ (chưa có; cần chạy notebook calibration trên Colab).
+
+### Cách chạy sau khi có `selected_config.json`
+
+```bash
+python scripts/extract_pair_factors.py --split val --split-file <val.txt> --manifest-csv <val_manifest.csv> \
+  --keypoint-root <keypoints> --cache-root <keypoint_tensor_cache> --config <selected_config.json> --output val_factors.csv
+python scripts/eval_pair_residual.py --predictions <ensemble_predictions.csv hoặc val_eval/predictions.csv> \
+  --factors val_factors.csv --output pair_residual_val.json
+```
+
+Chọn cấu hình trên validation, đóng băng, rồi mới quyết định có xem test hay không. Nếu `best_by_net` không dương, để residual tắt.
+
+### Quan sát và rủi ro cần kiểm chứng
+
+- Chạy thử trên 40 clip B0A cục bộ với cấu hình mẫu: họ hai ngón phát `G09` ở 11/40 clip và `G02` ở 5/40 clip dù không phải cử chỉ (dương tính giả trên clip không có cử chỉ). Residual chỉ chạm tới clip mà neural top-2 là một cặp nên phơi nhiễm nhỏ, nhưng cho thấy cần đo tỉ lệ dương tính giả trên toàn validation, không chỉ trên sáu lớp mục tiêu. Đây là cấu hình mẫu chưa hiệu chỉnh, chỉ là smoke test.
+- Detector chạy trên tensor đã lấy mẫu về 64 frame, nên `temporal_max_gap` và độ rộng chu kỳ tính theo frame đã lấy mẫu: một clip dài 140 frame có bước lấy mẫu 2,2 nên khoảng trống 2 frame tương đương khoảng 4 đến 5 frame gốc. Thời lượng cử chỉ cùng lớp thay đổi nhiều giữa subject (xem tài liệu audit mục 3.3), nên threshold nên được kiểm tra theo độ dài clip.
+- Lợi ích kỳ vọng nhỏ so với dao động giữa các seed (macro-F1 validation của C có độ lệch chuẩn 2,7 điểm); chỉ kết luận khi net dương ổn định trên ba seed trở lên.
+
+### Kiểm chứng
+
+`tests/test_pair_residual.py` (19 test): identity khi `alpha=0`; chỉ hai logit di chuyển, ngược chiều; định tuyến đúng từng họ; abstain khi top-2 không phải cặp, neural tự tin, `unknown`, quality thấp, factor của cặp khác, đáp án ngoài cặp, hoặc thiếu evidence; trộn batch; quyết định factor không dùng nhãn (hai chu kỳ là G08, một chu kỳ là G02, opening là G10; hơn hai chu kỳ hoặc hai hướng gần nhau thì `unknown`); evaluator đếm đúng beneficial/harmful và từ chối dòng split `test`; CLI không có tùy chọn test. Chạy thử `extract_pair_factors.py` từ đầu đến cuối trên 40 clip thật cục bộ. Kết hợp với kiểm tra: graph dựng ở HEAD giống hệt từng byte với `e817f16` trên 40 clip thật khi dùng cấu hình mặc định (temporal factor tắt).
+
+## 12. Kết quả calibration trên Colab (run `20261027T065209Z-331f625514`)
+
+Nguồn: `results/experiments/ipn13/artifact_zips/ipn13-temporal-factor.zip`. Provenance đã kiểm tra: commit `c73ea72`, `scope = train_validation_only`, không giới hạn mẫu (864 tensor = 6 lớp × (116 train + 28 val), mỗi tensor có kích thước và SHA-256), 18 cấu hình, `min_coverage = 0,25`, không có đường dẫn test.
+
+### Kết quả theo họ factor (cấu hình được chọn: chỉ số 15)
+
+| Cặp | Coverage val | Độ chính xác trên phần được phủ (val / train) | Nhận xét |
+|---|---:|---:|---|
+| G10/G11 (pinch) | 0,89 | **0,92 / 0,90** | Ổn định giữa train và validation và giữa các camera (0,87 đến 1,00) |
+| G01/G08 (một ngón) | 0,48 | 0,70 / **0,54** | Train gần ngẫu nhiên; con số val (n = 27) nhiễu |
+| G02/G09 (hai ngón) | 0,45 | **0,40 / 0,46** | Dưới mức ngẫu nhiên: 13/28 clip G09 bị phát hiện là một lần click |
+
+### Vì sao họ click yếu (đo từ `per_sample.csv`, train, cấu hình 15)
+
+Số chu kỳ click phát hiện được chồng lấn mạnh giữa lớp một click và hai click: G01 (một click) chỉ 29% clip phát hiện đúng 1 chu kỳ (35% không phát hiện chu kỳ nào, 36% phát hiện từ 2 chu kỳ trở lên); G08 (hai click) chỉ 18% phát hiện đúng 2 chu kỳ và 39% phát hiện từ 3 chu kỳ trở lên (detector đếm dao động chứ không đếm click). Họ hai ngón: 70% clip G02 không có chu kỳ đồng bộ nào.
+
+Số chu kỳ còn phụ thuộc độ dài clip (giả thuyết về độ phân giải thời gian, chưa kiểm chứng trực tiếp): với G01 ngắn hơn 45 frame, 53% không phát hiện chu kỳ nào, còn ở 45 đến 65 frame thì 52% phát hiện đúng một chu kỳ; clip dài hơn có nhiều chu kỳ giả. Detector chạy trên tensor đã lấy mẫu về 64 frame nên cùng một ngưỡng tương ứng các tốc độ vật lý khác nhau.
+
+### Vấn đề của quy trình chọn cấu hình
+
+- Chỉ 6/18 cấu hình thỏa cổng coverage; cả sáu đều là các cấu hình nghiêm ngặt nhất. Cấu hình được chọn nằm **ở biên lưới** ở nhiều chiều (`click_active_threshold` 0,62 là giá trị lớn nhất, `temporal_max_gap` 4 và `two_finger_start_delta` 5 là lớn nhất, `pinch_min_excursion` 0,08 là nhỏ nhất), nên lưới chưa hội tụ.
+- Mục tiêu là độ chính xác tổng với abstain tính là sai, tức thưởng coverage hơn là độ chính xác khi quyết định; cổng coverage lại ép chọn cấu hình có độ chính xác kém ở hai cặp click. Với pair-residual cần chọn **theo từng cặp**, ưu tiên precision trên phần được phủ.
+
+### Ước tính lợi ích của pair-residual trên validation
+
+Phương pháp: dùng quyết định factor của cấu hình 15 cho các clip thuộc sáu lớp mục tiêu (đầy đủ, vì clip ngoài cặp chỉ có thể cho thay đổi trung tính) cộng dự đoán validation của ba seed `c_ref`; chất lượng click đặt bằng 1,0 (không có trong file), chất lượng pinch lấy từ `best_confidence`; quét `alpha`, margin, quality; số liệu dưới đây là kết quả **tốt nhất trên lưới ngay trên validation (lạc quan)**.
+
+| Họ factor | Net clip sửa được (seed 42 / 123 / 3407, 589 clip) |
+|---|---|
+| pinch | 0 / +1 / 0 |
+| một ngón | +3 / +3 / +3 (cố định `alpha=2, margin=0,4, quality=0,3`: 0 / +3 / +3) |
+| hai ngón | 0 / −1 / −1 (cố định: 0 / −3 / −4) |
+| cả ba | +1 / +1 / 0 |
+
+Kết luận: với các detector hiện tại pair-residual cho lợi ích gần bằng 0 (cao nhất +3 clip trên 589, tức khoảng 0,5 điểm accuracy, nhỏ hơn nhiều so với dao động giữa các seed) và họ hai ngón có hại. Họ pinch tốt về chất lượng nhưng neural đã đúng ở các clip đó nên không có gì để sửa. **Không bật residual và không bật template V3.**
+
+### Hướng tiếp theo nếu muốn tiếp tục nhánh này
+
+1. Mở rộng lưới (ngưỡng active cao hơn, `temporal_max_gap` lớn hơn, `start_delta` lớn hơn) và chọn cấu hình theo từng cặp bằng precision có cổng coverage riêng.
+2. Tính detector trên tần số khung hình gốc hoặc chuẩn hóa ngưỡng theo độ dài clip thay vì trên tensor 64 frame.
+3. Thử quy tắc "số chu kỳ ≥ 2 so với ≤ 1" thay cho "đúng 1 so với đúng 2": trên train (G01/G08, bỏ qua clip không có chu kỳ), quy tắc "từ 2 chu kỳ là G08, đúng 1 chu kỳ là G01" cho khoảng 58% chính xác trên phần được phủ so với khoảng 54% hiện tại, vẫn thấp.
+4. Chỉ làm tiếp nếu sau các bước trên họ click đạt độ chính xác trên phần được phủ ổn định trên cả train và validation; nếu không, tập trung vào ensemble và dữ liệu (mục 7 của tài liệu audit).
+

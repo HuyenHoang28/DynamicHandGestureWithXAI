@@ -52,7 +52,7 @@ Train học trọng số; **validation** để chọn cấu hình và checkpoint
 - Input projection đổi từ `156 → d_model` sang `260 → d_model`; checkpoint cũ (3 đặc trưng) không nạp được vào model mới và ngược lại. Có cờ `--disable-motion-features` để tái tạo kiến trúc cũ.
 - Adapter neural của V4 ban đầu chỉ có projection `52×3`, nên không nạp được checkpoint có vận tốc như C và lần chạy IPN-13 đầu phải dùng checkpoint không vận tốc. Từ 2026-10-24 adapter có tùy chọn `--neural-motion-features` (mặc định tắt) nên nạp được C trực tiếp (mục 5.4).
 
-**Bằng chứng.** [Đã đo, một seed, trên test đã bị xem nên chỉ là exploratory]. Lần chạy IPN-13 (2026-10-24) vô tình tạo ra đúng phép đối chứng cần có: neural C (có vận tốc) và neural cùng siêu tham số nhưng tắt vận tốc, đánh giá trên cùng 1.101 clip test: **84,65% so với 82,56% accuracy, 77,24% so với 73,65% macro-F1**. Hơn nữa phần lớn chênh lệch nằm ở cử chỉ double click: recall G08 là 71,2% so với 36,5%, G09 là 65,4% so với 50,0%. Điều này khớp lý do thêm vận tốc (đếm click cần thông tin chuyển động). Hạn chế: một seed và đã dùng test; cần ba seed để chắc.
+**Bằng chứng.** [Đã đo, một seed, trên test đã bị xem nên chỉ là exploratory]. Lần chạy IPN-13 (2026-10-24) vô tình tạo ra đúng phép đối chứng cần có: neural C (có vận tốc) và neural cùng siêu tham số nhưng tắt vận tốc, đánh giá trên cùng 1.101 clip test: **84,65% so với 82,56% accuracy, 77,24% so với 73,65% macro-F1**. Hơn nữa phần lớn chênh lệch nằm ở cử chỉ double click: recall G08 là 71,2% so với 36,5%, G09 là 65,4% so với 50,0%. Điều này khớp lý do thêm vận tốc (đếm click cần thông tin chuyển động). Hạn chế: một seed và đã dùng test. **Hiệu chỉnh 2026-10-27:** sweep ba seed cho thấy test accuracy của C dao động 81,0% đến 84,65% giữa các seed (seed 42 là seed tốt nhất), nên chênh lệch 2,1 điểm này nằm trong dao động seed và chưa thể coi là đã chứng minh; cần ba seed không vận tốc để kết luận.
 
 ### 2.2 Pooling: gộp 64 token thành một vector cho cả clip
 
@@ -283,7 +283,7 @@ final = gate × neural_scaled + (1 − gate) × kg_scaled
 
 ### 5.4 Vấn đề vận tốc trong V4 (đã xử lý bằng code, 2026-10-24)
 
-Trước đây adapter neural của V4 chỉ nhận 3 đặc trưng mỗi điểm, không nạp được checkpoint C (có vận tốc). Cách tạm là train thêm một checkpoint không vận tốc để khởi tạo V4. Lần chạy IPN-13 cho thấy cái giá của cách này [Đã đo, một seed]: neural không vận tốc đạt 82,56% accuracy / 73,65% macro-F1, còn C có vận tốc đạt 84,65% / 77,24% trên cùng test (+2,1 và +3,6 điểm); đặc biệt recall của G08 là 36,5% so với 71,2%. V4 khởi tạo từ bản không vận tốc nên bị chặn trên bởi mức này.
+Trước đây adapter neural của V4 chỉ nhận 3 đặc trưng mỗi điểm, không nạp được checkpoint C (có vận tốc). Cách tạm là train thêm một checkpoint không vận tốc để khởi tạo V4. Lần chạy IPN-13 cho thấy cái giá của cách này [Đã đo, một seed]: neural không vận tốc đạt 82,56% accuracy / 73,65% macro-F1, còn C có vận tốc đạt 84,65% / 77,24% trên cùng test (+2,1 và +3,6 điểm); đặc biệt recall của G08 là 36,5% so với 71,2%. V4 khởi tạo từ bản không vận tốc nên bị chặn trên bởi mức này. (Lưu ý 2026-10-27: C ở đây là seed 42, seed tốt nhất trong ba seed; so với trung bình ba seed của C trên test (82,6%) thì V4 final (82,56%) không thấp hơn. Chênh lệch 2,1 điểm nằm trong dao động giữa các seed.)
 
 Adapter neural của V4 nay có thêm các tùy chọn `--neural-motion-features`, `--neural-pooling` và `--neural-hand-features` (mặc định tắt, nên checkpoint cũ vẫn tái tạo đúng: 128/128 clip DATE-27 cho dự đoán giống hệt lần chạy đã đóng gói). Kiểm tra bằng checkpoint C thật: nạp vào V4 không lỗi và neural head của V4 cho đúng logits của C lúc nạp.
 
@@ -385,7 +385,7 @@ Các thí nghiệm nên làm tiếp (một số do tài liệu nêu, một số 
 
 **Vì sao C tốt hơn?** C chỉ khác B ở augmentation: bỏ frame masking và giảm keypoint dropout, và hơn B khoảng 3,2 điểm accuracy. Giả thuyết là frame masking che mất khoảnh khắc click ngắn, và các lớp click quả thật cải thiện nhiều nhất. Nhưng đây là một seed, chưa tách hai yếu tố, nên là giả thuyết có bằng chứng gián tiếp chứ chưa phải kết luận nhân quả.
 
-**Vận tốc giúp bao nhiêu?** Một lần chạy cho thấy +2,1 điểm accuracy và +3,6 điểm macro-F1 trên test IPN (neural C so với bản không vận tốc cùng siêu tham số), tập trung ở double click (G08 recall 36,5% lên 71,2%). Mới một seed và test đã bị xem, nên cần ba seed để kết luận.
+**Vận tốc giúp bao nhiêu?** Một lần chạy cho thấy +2,1 điểm accuracy và +3,6 điểm macro-F1 trên test IPN (neural C so với bản không vận tốc cùng siêu tham số), tập trung ở double click (G08 recall 36,5% lên 71,2%). Mới một seed và test đã bị xem; sweep ba seed ngày 2026-10-27 cho thấy test accuracy của C dao động 81,0% đến 84,65% giữa các seed, nên chênh lệch này nằm trong dao động seed và cần ba seed để kết luận.
 
 **Vì sao fusion trên DATE-27 không vượt neural-only?** Final là tổ hợp lồi của hai logits nên nằm giữa chúng. Gate (trọng số của neural) trung bình khoảng 0,55 ở epoch được chọn, tức neural và KG có trọng số gần ngang nhau, và trên validation ba đầu ra gần như bằng nhau (khoảng 95,5%). Hai đầu cũng không độc lập: chung một encoder được train chung từ đầu (mục 5.5), nên trộn chúng cho rất ít lợi ích bổ sung. Cũng cần lưu ý neural-only độc lập chỉ còn `last.pt`, và neural head trong V4 là một head được train chung, không phải cùng một mô hình với neural-only.
 
