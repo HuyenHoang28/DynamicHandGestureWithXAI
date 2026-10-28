@@ -1,6 +1,6 @@
 # Kế hoạch chuỗi frame biến độ dài cho IPN
 
-Ngày lập: 2026-10-28. Trạng thái: bước 1–4 hoàn tất theo xác nhận PASS của người dùng; implementation bước 5 hoàn tất và chờ smoke report trên cache Drive đầy đủ; bước 6 chưa bắt đầu.
+Ngày lập: 2026-10-28. Trạng thái: bước 1–4 hoàn tất theo xác nhận PASS của người dùng; bước 5 PASS trên cache Drive đầy đủ (4.133 clip; train 2.443→2.764 window, val 589→672, test 1.101→1.266; 523 clip dài, report commit f7b4869); implementation bước 6 hoàn tất và chờ người dùng chạy notebook ablation.
 
 ## Vấn đề và quyết định ban đầu
 
@@ -283,3 +283,20 @@ Mean logits là policy đầu tiên để có baseline xác định và checkpoi
 - Lý do: kiểm tra cũ chỉ so span với `window_spans` và tổng `1/count`, nên metadata `window_count` sai hoặc coverage lỗi có thể vẫn báo PASS.
 - Tương thích/an toàn: chỉ thắt chặt assert của notebook; dataset, collate và aggregator không đổi, notebook vẫn không huấn luyện và không đụng test.
 - Validation: `python -m unittest tests.test_variable_length_dataset` pass 8/8; notebook parse JSON hợp lệ. Chưa chạy lại trên cache Drive đầy đủ; cần chạy notebook và nhận `STEP5_WINDOW_REPORT.json` PASS trước bước 6. Notebook clone nhánh `HuyenHoang` từ GitHub nên phải push trước khi chạy.
+
+## Bước 6 — ablation fixed-64 vs variable-length
+
+### Thay đổi
+- `final/code/neural_only_experiments/train_variable_length.py`: huấn luyện/đánh giá Transformer trên window 256 (stride 128). Loss là cross-entropy `reduction='none'` nhân `sample_weight = 1/số window`, chuẩn hóa bởi tổng `sample_weight × class_weight`, nên một clip luôn có tổng trọng số 1 và khớp `CrossEntropyLoss(weight=...)` khi mọi clip có một window. Validation/test gộp mean logits theo clip rồi mới tính accuracy, macro-F1, confusion matrix, accuracy theo nhóm độ dài (<64, 64–127, 128–255, ≥256), thời gian forward và peak VRAM. Chế độ `--checkpoint` đánh giá checkpoint và lưu `clip_logits.pt` để ensemble.
+- Velocity: huấn luyện và đánh giá để model tự tính từ keypoint (đã augment) với padding mask; kết quả trùng velocity trong cache và frame đầu window bằng 0, nên giống recipe C ở fixed-64 (jitter ảnh hưởng velocity).
+- `notebooks/IPN13_Variable_Length_Ablation_Colab.ipynb`: dùng lại run c_ref fixed-64 trên Drive, train variable-length 3 seed (42/123/3407), so theo cặp seed, ensemble, F1 lớp click/pinch, nhầm lẫn G01↔G08 và G02↔G09, nhóm độ dài, thời gian/VRAM, đóng gói ZIP. `MAX_FRAMES_ARMS=[256]`; thêm 128 hoặc 384 để so nhiều giới hạn.
+- `tests/test_train_variable_length.py`: loss có trọng số, clip tách window chỉ tính một lần, nhóm độ dài, train 1 epoch + đánh giá checkpoint end-to-end trên cache giả.
+
+### Lý do
+Kiểm tra giả thuyết bước 2: giữ nguyên chuỗi đến 256 frame và window cho clip dài giúp lớp click tốt hơn so với ép về 64 frame. Chỉ chạy validation; test giữ khóa.
+
+### Tương thích và an toàn
+Pipeline fixed-64 (`train_neural_only.py`, `test_neural_only.py`, cache T64) không đổi và là nhóm đối chứng. Khác biệt cố ý so với c_ref: batch 32, positional capacity 256, loss theo trọng số window. Hiệu số có thể chịu ảnh hưởng của các yếu tố này cùng với variable-length, không tách riêng được nếu không có arm bổ sung. Tiêu chí kết luận: macro-F1 dương ở cả 3 seed và trung bình > 0,01; sd macro-F1 giữa seed khoảng 0,027 nên chênh lệch nhỏ hơn mức đó không kết luận.
+
+### Validation
+`python -m unittest tests.test_train_variable_length tests.test_variable_length_dataset` pass 12/12; notebook parse hợp lệ và syntax của mọi cell code kiểm tra bằng `ast`. Chưa train trên dữ liệu thật; cần chạy notebook trên Colab (phải push nhánh trước) và gửi ZIP trong `runs/ipn13_variable_length/`.
