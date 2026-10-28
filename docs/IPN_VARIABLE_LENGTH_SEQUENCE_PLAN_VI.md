@@ -1,6 +1,6 @@
 # Kế hoạch chuỗi frame biến độ dài cho IPN
 
-Ngày lập: 2026-10-28. Trạng thái: bước 1–3 hoàn tất; implementation bước 4 hoàn tất và chờ smoke report trên cache Drive đầy đủ; bước 5 chưa bắt đầu. Người dùng xác nhận notebook bước 3 đã chạy xong trên bộ IPN ở Google Drive.
+Ngày lập: 2026-10-28. Trạng thái: bước 1–4 hoàn tất theo xác nhận PASS của người dùng; implementation bước 5 hoàn tất và chờ smoke report trên cache Drive đầy đủ; bước 6 chưa bắt đầu.
 
 ## Vấn đề và quyết định ban đầu
 
@@ -235,3 +235,51 @@ Bước 4 không xử lý clip dài hơn 256. Dataset cố ý từ chối chúng
 - Smoke test trên cache thật cục bộ: ba clip 223/250/203 frame tạo batch `[3,250,52,3]`, logits `[3,13]` hữu hạn.
 - Các test cũ phụ thuộc pytest chưa chạy vì `.venv` thiếu package `pytest`; 10 test bước 4 dùng `unittest` đều pass.
 - Notebook `notebooks/IPN_Variable_Length_Step4_Smoke_Colab.ipynb` dùng cache đầy đủ trên Drive để audit tỷ lệ `<=256`/`>256`, chạy DataLoader + Transformer trên clip hợp lệ, kiểm tra padding invariance và lưu `STEP4_SMOKE_REPORT.json`. Notebook không huấn luyện và không bỏ qua clip dài trong metric; chúng được báo cáo là chờ bước 5.
+
+## Bước 5 — sliding window và gộp theo clip
+
+### Window policy
+
+`WindowedVariableKeypointDataset` biến mỗi clip thành các window half-open `[start,end)` với `max_frames=256`, `stride=128`:
+
+- `N<=256`: đúng một window `[0,N)`, giữ nguyên toàn bộ clip;
+- `N>256`: các start đều cách 128 frame và thêm window cuối tại `N-256` nếu cần;
+- không có start trùng và window cuối luôn kết thúc đúng frame cuối.
+
+Ví dụ clip 525 frame:
+
+```text
+[0,256), [128,384), [256,512), [269,525)
+```
+
+Toàn bộ 525 frame được phủ. Velocity ở frame đầu mỗi window được đặt 0 vì frame trước nó không thuộc input của window; các velocity còn lại dùng trực tiếp từ cache bước 3.
+
+### Cân bằng huấn luyện
+
+Mọi window kế thừa nhãn và split của clip. Mỗi window mang `sample_weight = 1 / window_count`, nên tổng trọng số của mọi window thuộc một clip bằng 1. Bước 6 phải dùng cross-entropy `reduction='none'`, nhân sample weight rồi chuẩn hóa tổng trọng số; nếu dùng mean loss thông thường, clip dài có nhiều window sẽ bị over-sample.
+
+### Gộp inference và metric
+
+`aggregate_window_logits` nhóm window theo `(split, source)`, kiểm tra nhãn/clip index/window count nhất quán, từ chối window thiếu hoặc trùng, rồi lấy mean logits theo window. Output được sắp theo clip index và chỉ có một logits/nhãn/path cho mỗi clip. Accuracy, macro-F1 và confusion matrix ở bước 6 bắt buộc tính trên output đã gộp, không tính trên từng window.
+
+Mean logits là policy đầu tiên để có baseline xác định và checkpoint-independent. Nếu ablation bước 6 cho thấy window nền làm yếu clip dài, có thể so sánh mean probability, max confidence hoặc attention aggregation; không thay policy sau khi xem test.
+
+### Tương thích và ranh giới
+
+- Dataset/collate bước 4 vẫn giữ nguyên cho clip `<=256` và smoke test.
+- Window metadata chỉ được thêm khi dùng `WindowedVariableKeypointDataset`; collate legacy không đổi key/shape.
+- Model không đổi thêm ở bước 5: mỗi window đã có `T<=256` và dùng padding mask bước 4.
+- Bước 5 chưa huấn luyện. Notebook chỉ kiểm tra coverage, window boundary, forward và aggregation; bước 6 mới chạy training/ablation nhiều seed.
+
+### Validation bước 5
+
+- Unit test xác nhận span 256/257/525 phủ đầy đủ, slice keypoint chính xác, velocity đầu window bằng 0 và tổng weight mỗi clip bằng 1.
+- Aggregator được test với window xáo trộn, nhiều clip và phát hiện thiếu/trùng window hoặc nhãn không nhất quán.
+- Notebook `notebooks/IPN_Variable_Length_Step5_Windowing_Colab.ipynb` audit toàn bộ cache Drive, chạy Transformer qua window clip dài và lưu `STEP5_WINDOW_REPORT.json`. Report PASS là điều kiện trước bước 6.
+
+### Review bước 5 (2026-10-28)
+
+- Thay đổi: notebook bước 5 thêm kiểm tra `window_count` bằng số window thực tế, chỉ số window liên tục từ 0, mọi window nằm trong `[0,N]` và dài ≤256, hợp các window phủ đúng mọi frame, window cuối kết thúc tại frame cuối.
+- Lý do: kiểm tra cũ chỉ so span với `window_spans` và tổng `1/count`, nên metadata `window_count` sai hoặc coverage lỗi có thể vẫn báo PASS.
+- Tương thích/an toàn: chỉ thắt chặt assert của notebook; dataset, collate và aggregator không đổi, notebook vẫn không huấn luyện và không đụng test.
+- Validation: `python -m unittest tests.test_variable_length_dataset` pass 8/8; notebook parse JSON hợp lệ. Chưa chạy lại trên cache Drive đầy đủ; cần chạy notebook và nhận `STEP5_WINDOW_REPORT.json` PASS trước bước 6. Notebook clone nhánh `HuyenHoang` từ GitHub nên phải push trước khi chạy.
