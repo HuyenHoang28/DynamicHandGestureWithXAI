@@ -179,11 +179,13 @@ class DualCrossAttentionV4NeuroSymbolicModel(DualCrossAttentionNeuroSymbolicMode
         keypoints: torch.Tensor,
         instance_graph_json: list[str],
         return_attention: bool = False,
+        padding_mask: torch.Tensor | None = None,
+        velocity: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
-        neural = self.neural(keypoints)
+        neural = self.neural(keypoints, padding_mask=padding_mask, velocity=velocity)
         batch, frames, _ = neural["tokens"].shape
         neural_memory = self.neural_projector(neural["tokens"])
-        neural_mask = torch.zeros((batch, frames), dtype=torch.bool, device=keypoints.device)
+        neural_mask = neural["padding_mask"]
 
         instance = self.graph_encoder.encode_instances(instance_graph_json, keypoints.device)
         graph_tokens, graph_mask = self.instance_compressor(instance["tokens"], instance["mask"])

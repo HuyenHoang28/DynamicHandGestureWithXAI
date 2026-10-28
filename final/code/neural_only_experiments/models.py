@@ -17,6 +17,10 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.size(1) > self.pe.size(1):
+            raise ValueError(
+                f"Sequence length {x.size(1)} exceeds positional capacity {self.pe.size(1)}"
+            )
         return x + self.pe[:, : x.size(1)]
 
 
@@ -36,8 +40,12 @@ class TransformerEncoder(nn.Module):
         self.encoder = nn.TransformerEncoder(layer, num_layers=layers)
         self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.norm(self.encoder(self.pos(x)))
+    def forward(
+        self, x: torch.Tensor, padding_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return self.norm(
+            self.encoder(self.pos(x), src_key_padding_mask=padding_mask)
+        )
 
 
 class TCNEncoder(nn.Module):
@@ -190,32 +198,68 @@ class NeuralOnlyClassifier(nn.Module):
             nn.Linear(d_model, num_classes),
         )
 
-    def forward(self, keypoints: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        keypoints: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        velocity: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         batch, frames, keypoints_count, dims = keypoints.shape
         if keypoints_count != self.num_keypoints or dims != self.input_dims:
             raise ValueError(
                 f"Expected [B,T,{self.num_keypoints},{self.input_dims}], got {tuple(keypoints.shape)}"
             )
-        frame_valid = keypoints[..., 2].amax(dim=2) > 0 if dims >= 3 else torch.ones(
-            (batch, frames), dtype=torch.bool, device=keypoints.device
-        )
+        if padding_mask is not None:
+            if padding_mask.shape != (batch, frames) or padding_mask.dtype != torch.bool:
+                raise ValueError("padding_mask must be bool with shape [B,T]")
+            if padding_mask.device != keypoints.device:
+                raise ValueError("padding_mask and keypoints must be on the same device")
+            if padding_mask.all(dim=1).any():
+                raise ValueError("Every sequence must contain at least one real frame")
+            frame_valid = ~padding_mask
+            if self.backbone != "transformer":
+                raise ValueError(
+                    "Explicit variable-length padding masks are currently supported only by transformer"
+                )
+        else:
+            frame_valid = keypoints[..., 2].amax(dim=2) > 0 if dims >= 3 else torch.ones(
+                (batch, frames), dtype=torch.bool, device=keypoints.device
+            )
         features = keypoints
         if self.use_motion_features:
-            velocity = torch.zeros_like(keypoints[..., :2])
-            velocity[:, 1:] = keypoints[:, 1:, :, :2] - keypoints[:, :-1, :, :2]
-            if dims >= 3:
-                point_valid = keypoints[..., 2] > 0
-                pair_valid = point_valid[:, 1:] & point_valid[:, :-1]
-                velocity[:, 1:] *= pair_valid.unsqueeze(-1)
+            if velocity is None:
+                velocity = torch.zeros_like(keypoints[..., :2])
+                velocity[:, 1:] = keypoints[:, 1:, :, :2] - keypoints[:, :-1, :, :2]
+                if dims >= 3:
+                    point_valid = keypoints[..., 2] > 0
+                    pair_valid = point_valid[:, 1:] & point_valid[:, :-1]
+                    velocity[:, 1:] *= pair_valid.unsqueeze(-1)
+            else:
+                if velocity.shape != (batch, frames, keypoints_count, 2):
+                    raise ValueError("velocity must have shape [B,T,K,2]")
+                if velocity.device != keypoints.device or velocity.dtype != keypoints.dtype:
+                    raise ValueError("velocity must match keypoints device and dtype")
+            if padding_mask is not None:
+                velocity = velocity.masked_fill(padding_mask[:, :, None, None], 0.0)
             features = torch.cat([keypoints, velocity], dim=-1)
+        elif velocity is not None:
+            raise ValueError("velocity was provided while motion features are disabled")
         x = features.reshape(batch, frames, -1)
         if self.hand_features:
             x = torch.cat([x, hand_geometry_inputs(keypoints)], dim=-1)
         x = self.input_proj(x)
-        tokens = self.encoder(x)
+        if self.backbone == "transformer":
+            tokens = self.encoder(x, padding_mask=padding_mask)
+        else:
+            tokens = self.encoder(x)
         if self.pooling == "mean":
             # Exact legacy behavior for old checkpoints and controlled ablations.
-            pooled = tokens.mean(dim=1)
+            if padding_mask is None:
+                pooled = tokens.mean(dim=1)
+            else:
+                weights = frame_valid.to(tokens.dtype)
+                weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
+                pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
         elif self.pooling == "masked_mean":
             weights = frame_valid.to(tokens.dtype)
             weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)

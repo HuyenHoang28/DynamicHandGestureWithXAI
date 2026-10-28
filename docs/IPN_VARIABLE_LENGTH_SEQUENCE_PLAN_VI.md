@@ -1,6 +1,6 @@
 # Kế hoạch chuỗi frame biến độ dài cho IPN
 
-Ngày lập: 2026-10-28. Trạng thái: bước 1, bước 2 và implementation bước 3 hoàn tất; bước 4 chưa bắt đầu. Cache bước 3 mới materialize được trên 40 clip vì workspace chỉ có 40 keypoint JSON.
+Ngày lập: 2026-10-28. Trạng thái: bước 1–3 hoàn tất; implementation bước 4 hoàn tất và chờ smoke report trên cache Drive đầy đủ; bước 5 chưa bắt đầu. Người dùng xác nhận notebook bước 3 đã chạy xong trên bộ IPN ở Google Drive.
 
 ## Vấn đề và quyết định ban đầu
 
@@ -191,6 +191,47 @@ Vì vậy implementation bước 3 đã hoàn tất nhưng cache đầy đủ ch
 
 ### Notebook tạo cache đầy đủ trên Google Drive
 
-`notebooks/IPN_Variable_Length_Cache_Colab.ipynb` là quy trình Colab cho bộ keypoint IPN đã extract trên Drive. Notebook mount Drive, đồng bộ repository, kiểm tra chính xác tập path manifest ↔ JSON theo từng split (không chỉ đếm 2.443/589/1.101), vô hiệu hóa report PASS cũ trước khi chạy, tạo `variable_v1`, rồi kiểm tra chính xác tập path manifest ↔ cache cùng schema + SHA-256 fingerprint. `CACHE_BUILD_REPORT.json` được thay thế atomically trên Drive khi audit hoàn tất. Notebook chạy CPU; không cần GPU vì chỉ chuẩn hóa JSON, tính hiệu frame và ghi tensor. Nó không sửa hoặc ghi đè `T64`.
+`notebooks/IPN_Variable_Length_Cache_Colab.ipynb` là quy trình Colab cho bộ keypoint IPN đã extract trên Drive. Notebook mount Drive, checkout/pull rõ ràng branch `HuyenHoang` (không phụ thuộc default branch), yêu cầu mọi path trong manifest có JSON tương ứng và báo cáo nhưng bỏ qua JSON ngoài manifest, vô hiệu hóa report PASS cũ trước khi chạy, tạo `variable_v1`, rồi kiểm tra chính xác tập path manifest ↔ cache cùng schema + SHA-256 fingerprint. `CACHE_BUILD_REPORT.json` được thay thế atomically trên Drive khi audit hoàn tất. Notebook chạy CPU; không cần GPU vì chỉ chuẩn hóa JSON, tính hiệu frame và ghi tensor. Nó không sửa hoặc ghi đè `T64`.
 
 Validation notebook tại repository: file qua `json.tool`, đủ nbformat 4 và toàn bộ 5 code cell compile thành công; review độc lập đã kiểm tra convention clone/Drive, CLI và cách ly `T64`. Chưa chạy end-to-end trên Colab vì bộ 4.133 JSON chỉ có trên Google Drive của dự án; trạng thái `PASS` cuối cùng phải lấy từ `CACHE_BUILD_REPORT.json` do chính notebook tạo trên Drive.
+
+## Bước 4 — batch động và padding mask
+
+### Data contract mới
+
+`final/code/neural_only_experiments/variable_dataset.py` đọc cache `variable_v1`. Mỗi sample trả `keypoints [N,52,3]`, `velocity [N,52,2]`, `length`, nhãn và source path. Dataset từ chối cache rỗng, nhãn âm, shape/schema sai và clip `N>256`; trường hợp cuối thông báo rõ phải qua windowing bước 5, không âm thầm cắt.
+
+`collate_variable_batch` pad zero đến clip dài nhất **trong batch**, không pad cố định tới 256:
+
+```text
+keypoints    [B, T_batch_max, 52, 3]
+velocity     [B, T_batch_max, 52, 2]
+padding_mask [B, T_batch_max]  # True chỉ ở padding
+lengths      [B]
+```
+
+Frame thật được xác định bằng `length/padding_mask`, không suy ra từ confidence; vì vậy một frame thật mất toàn bộ detection vẫn không bị nhầm là padding. Keypoint và velocity ở padding luôn bằng 0.
+
+### Model contract mới
+
+`NeuralOnlyClassifier.forward` và `NeuralBaselineAdapter.forward` nhận tùy chọn `padding_mask` và `velocity`. Với chế độ mới:
+
+- velocity lấy trực tiếp từ cache bước 3, không tính hiệu qua padding;
+- Transformer nhận `src_key_padding_mask`, nên frame padding không làm key/value attention;
+- `mean`, `masked_mean` và attention pooling đều loại padding;
+- adapter neuro-symbolic trả mask cùng token; các model fusion V2/V3/V4 truyền mask này vào cross-attention memory;
+- sequence vượt positional capacity và sample toàn padding bị từ chối rõ ràng.
+
+API legacy `model(keypoints)` và cache `T64` không đổi. State-dict không thêm parameter trainable, positional encoding vẫn là buffer non-persistent, nên checkpoint cũ giữ tương thích. Chế độ padding-mask ở bước 4 chỉ hỗ trợ Transformer; TCN, BiGRU và MLP-Mixer fail rõ thay vì chạy mask sai. Hỗ trợ đúng cho các backbone này cần thiết kế riêng và không nằm trong baseline Transformer đã chọn.
+
+### Ranh giới với bước 5
+
+Bước 4 không xử lý clip dài hơn 256. Dataset cố ý từ chối chúng để không tạo batch quá positional capacity. Bước 5 sẽ biến mỗi clip dài thành các window 256/stride 128 và định nghĩa gộp prediction theo clip; chỉ sau đó mới có thể train/evaluate đủ 4.133 clip.
+
+### Validation bước 4
+
+- 5 unit test Dataset/collate pass: path Drive/relative, batch 5/8 frame, zero padding, mask chính xác, không repeat-last, clip rỗng/dài bị từ chối và legacy API tách biệt.
+- 5 unit test model pass: logits bất biến trước giá trị padding lớn, velocity explicit khớp legacy trên frame thật, mask validation, positional guard, unsupported backbone guard và mask từ adapter neuro-symbolic.
+- Smoke test trên cache thật cục bộ: ba clip 223/250/203 frame tạo batch `[3,250,52,3]`, logits `[3,13]` hữu hạn.
+- Các test cũ phụ thuộc pytest chưa chạy vì `.venv` thiếu package `pytest`; 10 test bước 4 dùng `unittest` đều pass.
+- Notebook `notebooks/IPN_Variable_Length_Step4_Smoke_Colab.ipynb` dùng cache đầy đủ trên Drive để audit tỷ lệ `<=256`/`>256`, chạy DataLoader + Transformer trên clip hợp lệ, kiểm tra padding invariance và lưu `STEP4_SMOKE_REPORT.json`. Notebook không huấn luyện và không bỏ qua clip dài trong metric; chúng được báo cáo là chờ bước 5.

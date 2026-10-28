@@ -54,6 +54,10 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.size(1) > self.pe.size(1):
+            raise ValueError(
+                f"Sequence length {x.size(1)} exceeds positional capacity {self.pe.size(1)}"
+            )
         return x + self.pe[:, : x.size(1)]
 
 
@@ -127,28 +131,61 @@ class NeuralBaselineAdapter(nn.Module):
             nn.Linear(d_model, num_classes),
         )
 
-    def forward(self, keypoints: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        keypoints: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+        velocity: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         batch, frames, keypoints_count, dims = keypoints.shape
-        features = keypoints
-        if self.use_motion_features:
-            velocity = torch.zeros_like(keypoints[..., :2])
-            velocity[:, 1:] = keypoints[:, 1:, :, :2] - keypoints[:, :-1, :, :2]
-            if dims >= 3:
-                point_valid = keypoints[..., 2] > 0
-                pair_valid = point_valid[:, 1:] & point_valid[:, :-1]
-                velocity[:, 1:] *= pair_valid.unsqueeze(-1)
-            features = torch.cat([keypoints, velocity], dim=-1)
-        x = features.reshape(batch, frames, -1)
-        if self.hand_features:
-            x = torch.cat([x, hand_geometry_inputs(keypoints)], dim=-1)
-        x = self.input_proj(x)
-        tokens = self.encoder.norm(self.encoder.encoder(self.encoder.pos(x)))
-        if self.pooling == "mean":
-            pooled = tokens.mean(dim=1)
+        if padding_mask is not None:
+            if padding_mask.shape != (batch, frames) or padding_mask.dtype != torch.bool:
+                raise ValueError("padding_mask must be bool with shape [B,T]")
+            if padding_mask.device != keypoints.device:
+                raise ValueError("padding_mask and keypoints must be on the same device")
+            if padding_mask.all(dim=1).any():
+                raise ValueError("Every sequence must contain at least one real frame")
+            frame_valid = ~padding_mask
         else:
             frame_valid = keypoints[..., 2].amax(dim=2) > 0 if dims >= 3 else torch.ones(
                 (batch, frames), dtype=torch.bool, device=keypoints.device
             )
+        features = keypoints
+        if self.use_motion_features:
+            if velocity is None:
+                velocity = torch.zeros_like(keypoints[..., :2])
+                velocity[:, 1:] = keypoints[:, 1:, :, :2] - keypoints[:, :-1, :, :2]
+                if dims >= 3:
+                    point_valid = keypoints[..., 2] > 0
+                    pair_valid = point_valid[:, 1:] & point_valid[:, :-1]
+                    velocity[:, 1:] *= pair_valid.unsqueeze(-1)
+            else:
+                if velocity.shape != (batch, frames, keypoints_count, 2):
+                    raise ValueError("velocity must have shape [B,T,K,2]")
+                if velocity.device != keypoints.device or velocity.dtype != keypoints.dtype:
+                    raise ValueError("velocity must match keypoints device and dtype")
+            if padding_mask is not None:
+                velocity = velocity.masked_fill(padding_mask[:, :, None, None], 0.0)
+            features = torch.cat([keypoints, velocity], dim=-1)
+        elif velocity is not None:
+            raise ValueError("velocity was provided while motion features are disabled")
+        x = features.reshape(batch, frames, -1)
+        if self.hand_features:
+            x = torch.cat([x, hand_geometry_inputs(keypoints)], dim=-1)
+        x = self.input_proj(x)
+        tokens = self.encoder.norm(
+            self.encoder.encoder(
+                self.encoder.pos(x), src_key_padding_mask=padding_mask
+            )
+        )
+        if self.pooling == "mean":
+            if padding_mask is None:
+                pooled = tokens.mean(dim=1)
+            else:
+                weights = frame_valid.to(tokens.dtype)
+                weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
+                pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
+        else:
             if self.pooling == "masked_mean":
                 weights = frame_valid.to(tokens.dtype)
                 weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1.0)
@@ -159,7 +196,19 @@ class NeuralBaselineAdapter(nn.Module):
                 scores = torch.where(all_invalid.unsqueeze(1), torch.zeros_like(scores), scores)
                 weights = scores.softmax(dim=1)
             pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
-        return {"tokens": tokens, "pooled": pooled, "logits": self.classifier(pooled)}
+        return {
+            "tokens": tokens,
+            "pooled": pooled,
+            "logits": self.classifier(pooled),
+            # Confidence validity and temporal padding are different concepts.
+            # Legacy fixed-length calls have no padding even if detection is
+            # missing in a real frame.
+            "padding_mask": (
+                padding_mask
+                if padding_mask is not None
+                else torch.zeros((batch, frames), dtype=torch.bool, device=keypoints.device)
+            ),
+        }
 
     def load_baseline_checkpoint(self, checkpoint_path: str | Path) -> None:
         checkpoint = load_checkpoint_compat(checkpoint_path)
@@ -701,11 +750,13 @@ class TemplateQueryNeuroSymbolicModel(nn.Module):
         keypoints: torch.Tensor,
         instance_graph_json: list[str],
         return_attention: bool = False,
+        padding_mask: torch.Tensor | None = None,
+        velocity: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | None]:
-        neural = self.neural(keypoints)
+        neural = self.neural(keypoints, padding_mask=padding_mask, velocity=velocity)
         batch, frames, _ = neural["tokens"].shape
         keypoint_memory = neural["tokens"] + self.modality_emb.weight[0]
-        keypoint_mask = torch.zeros((batch, frames), dtype=torch.bool, device=keypoints.device)
+        keypoint_mask = neural["padding_mask"]
 
         instance = self.graph_encoder.encode_instances(instance_graph_json, keypoints.device)
         instance_tokens, instance_mask = compress_instance_tokens(
