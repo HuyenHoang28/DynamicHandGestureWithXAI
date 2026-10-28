@@ -300,3 +300,18 @@ Pipeline fixed-64 (`train_neural_only.py`, `test_neural_only.py`, cache T64) kh�
 
 ### Validation
 `python -m unittest tests.test_train_variable_length tests.test_variable_length_dataset` pass 12/12; notebook parse hợp lệ và syntax của mọi cell code kiểm tra bằng `ast`. Chưa train trên dữ liệu thật; cần chạy notebook trên Colab (phải push nhánh trước) và gửi ZIP trong `runs/ipn13_variable_length/`.
+
+### Kết quả bước 6 (validation, 3 seed 42/123/3407, 2026-10-28)
+
+| Nhóm | acc mean±sd | macro-F1 mean±sd | ensemble acc | ensemble macro-F1 |
+|---|---:|---:|---:|---:|
+| fixed64 (c_ref) | 0,8732±0,0160 | 0,8078±0,0271 | 0,8947 | 0,8395 |
+| var256 | 0,8755±0,0039 | 0,8098±0,0041 | 0,8829 | 0,8190 |
+
+- Hiệu macro-F1 theo cặp seed (var256 − fixed64): −0,0260 / +0,0205 / +0,0114, trung bình +0,0020. Không đạt tiêu chí (3 seed dương và trung bình > 0,01): **chưa chứng minh được khác biệt**. Ensemble var256 thấp hơn fixed64 (macro-F1 −0,0205).
+- Lớp click không cải thiện: F1 G08 0,664→0,611, G09 0,685→0,617, G01 0,592→0,578, G02 0,608→0,606; số clip nhầm G01↔G08 45→49, G02↔G09 35→37 (cộng 3 seed). Pinch G10 0,762→0,816, G11 0,788→0,778.
+- Accuracy theo độ dài (fixed64 → var256): <64 (220 clip) 0,818→0,832; 64–127 (104) 0,740→0,705; 128–255 (190) 0,963→0,970; ≥256 (75) 1,000 vs 0,991. Chênh lệch ≤ 0,035, số clip mỗi nhóm nhỏ.
+- Chi phí: suy luận 1,154 ms/clip (mọi window, phạm vi đo khác fixed64) so với 0,163 ms/clip; peak VRAM eval 391 MiB; train 22,1 phút/run.
+- Sd macro-F1 giữa seed của var256 (0,004) thấp hơn fixed64 (0,027), nhưng với 3 seed chỉ là gợi ý, chưa phải kết luận về độ ổn định.
+- Giới hạn: var256 khác c_ref ở batch size, positional capacity và loss theo trọng số window nên chênh lệch không quy riêng cho variable-length; chỉ thử `max_frames=256`; test chưa được mở.
+- Quyết định: không chuyển sang variable-length làm mặc định; giữ fixed-64 vì đơn giản và rẻ hơn. Giả thuyết "ép 64 frame làm mất click" không được ủng hộ bởi dữ liệu này.

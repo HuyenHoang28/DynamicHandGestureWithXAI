@@ -26,6 +26,9 @@ from src_neurosymbolic.models.keypoint_dataset import (  # noqa: E402
 from src_neurosymbolic.predicates.extract_predicates import (  # noqa: E402
     extract_temporal_factor_predicates,
 )
+from src_neurosymbolic.models.keypoint_dataset import read_split_file  # noqa: E402
+from src_neurosymbolic.variable_keypoint_cache import load_variable_cache  # noqa: E402
+from neural_only_experiments.variable_dataset import variable_cache_path  # noqa: E402
 
 TARGET_PAIRS = (("G01", "G08"), ("G02", "G09"), ("G10", "G11"))
 PAIR_TO_FAMILY = {("G01", "G08"): "index", ("G02", "G09"): "two_finger", ("G10", "G11"): "pinch"}
@@ -35,6 +38,21 @@ DEFAULT_GRID = [
     {"click_active_threshold": .56, "click_inactive_threshold": .46, "click_min_confidence": .35, "two_finger_start_delta": 4, "two_finger_overlap": .4, "pinch_min_excursion": .12, "pinch_min_valid_ratio": .6, "temporal_max_gap": 3, "pinch_dominance_ratio": 1.2},
     {"click_active_threshold": .62, "click_inactive_threshold": .50, "click_min_confidence": .45, "two_finger_start_delta": 5, "two_finger_overlap": .35, "pinch_min_excursion": .16, "pinch_min_valid_ratio": .7, "temporal_max_gap": 4, "pinch_dominance_ratio": 1.35},
 ]
+
+
+def fullrate_grid() -> list[dict[str, Any]]:
+    """Grid for caches that keep the original frame rate (gaps/deltas are in real frames)."""
+    grid = []
+    for active, inactive in ((.50, .42), (.56, .46), (.62, .50)):
+        for gap, delta in ((3, 4), (5, 6)):
+            for min_confidence in (.30, .40):
+                grid.append({
+                    "click_active_threshold": active, "click_inactive_threshold": inactive,
+                    "click_min_confidence": min_confidence, "two_finger_start_delta": delta,
+                    "two_finger_overlap": .4, "pinch_min_excursion": .12, "pinch_min_valid_ratio": .6,
+                    "temporal_max_gap": gap, "pinch_dominance_ratio": 1.2,
+                })
+    return grid
 
 
 def sha256_file(path: Path) -> str:
@@ -246,12 +264,18 @@ def resolve_sample_input(dataset: KeypointSequenceDataset, source: str) -> Path:
 
 
 def run_split(split: str, split_path: Path, manifest_path: Path, keypoint_root: Path,
-              cache_root: Path | None, configs: list[dict[str, Any]], limit: int | None) -> tuple[list[dict], dict[str, int], list[dict]]:
+              cache_root: Path | None, configs: list[dict[str, Any]], limit: int | None,
+              variable_cache_root: Path | None = None) -> tuple[list[dict], dict[str, int], list[dict]]:
     metadata = manifest_labels(manifest_path)
-    dataset = KeypointSequenceDataset(split_path, keypoint_root, split, cache_root=cache_root)
+    if variable_cache_root is None:
+        dataset = KeypointSequenceDataset(split_path, keypoint_root, split, cache_root=cache_root)
+        samples = dataset.samples
+    else:
+        dataset = None  # full-rate variable_v1 cache replaces the 64-frame tensors
+        samples = read_split_file(split_path)
     records, skipped, inputs = [], Counter(), []
     relevant_seen = 0
-    for i, (source, label_id) in enumerate(dataset.samples):
+    for i, (source, label_id) in enumerate(samples):
         validate_source_split(source, split)
         label, meta_subject = label_from_source(source, split, metadata, label_id)
         subject = subject_from(source, meta_subject)
@@ -261,7 +285,11 @@ def run_split(split: str, split_path: Path, manifest_path: Path, keypoint_root: 
         if limit is not None and relevant_seen >= limit:
             break
         relevant_seen += 1
-        input_path = resolve_sample_input(dataset, source)
+        input_path = (
+            variable_cache_path(source, variable_cache_root)
+            if variable_cache_root is not None
+            else resolve_sample_input(dataset, source)
+        )
         if not input_path.is_file():
             raise FileNotFoundError(f"Cannot resolve input for {split} sample {source!r}: {input_path}")
         inputs.append({
@@ -271,8 +299,12 @@ def run_split(split: str, split_path: Path, manifest_path: Path, keypoint_root: 
             "size_bytes": input_path.stat().st_size,
             "sha256": sha256_file(input_path),
         })
-        item = dataset[i]
-        frames = tensor_to_frames(item["keypoints"])
+        keypoints = (
+            load_variable_cache(input_path)["keypoints"]
+            if variable_cache_root is not None
+            else dataset[i]["keypoints"]
+        )
+        frames = tensor_to_frames(keypoints)
         for config_index, config in enumerate(configs):
             predicates = extract_temporal_factor_predicates(frames, .3, **config)
             prediction, evidence = pair_decision(label, predicates, config)
@@ -287,6 +319,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, default=ROOT / "external_data/ipn_processed", help="IPN processed root containing train.txt and val.txt.")
     parser.add_argument("--keypoint-root", type=Path, help="Raw keypoint JSON root; defaults to DATA_ROOT/keypoints.")
     parser.add_argument("--cache-root", type=Path, help="Optional normalized tensor cache, used by project loader.")
+    parser.add_argument("--variable-cache-root", type=Path,
+                        help="Use full-frame-rate variable_v1 caches under this root instead of 64-frame tensors; "
+                             "defaults the grid to the full-rate grid.")
     parser.add_argument("--grid", type=Path, help="JSON list of temporal-factor threshold dictionaries. Defaults to a small built-in grid.")
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for calibration report and selected artifacts.")
     parser.add_argument("--min-coverage", type=float, default=.25, help="Minimum per-pair validation coverage for a config to be eligible.")
@@ -307,14 +342,17 @@ def main(argv: list[str] | None = None) -> int:
     for path in (train_path, val_path):
         if not path.is_file():
             raise FileNotFoundError(path)
-    configs = json.loads(args.grid.read_text(encoding="utf-8")) if args.grid else DEFAULT_GRID
+    configs = (
+        json.loads(args.grid.read_text(encoding="utf-8")) if args.grid
+        else fullrate_grid() if args.variable_cache_root else DEFAULT_GRID
+    )
     if not isinstance(configs, list) or not configs or any(not isinstance(c, dict) for c in configs):
         raise ValueError("--grid must contain a non-empty JSON list of threshold objects")
     # Canonicalize configs to prevent accidental mutation and make output stable.
     configs = [json.loads(json.dumps(c, sort_keys=True)) for c in configs]
     keypoint_root = args.keypoint_root or data_root / "keypoints"
-    train_records, train_skipped, train_inputs = run_split("train", train_path, data_root / "train_manifest.csv", keypoint_root, args.cache_root, configs, args.limit)
-    val_records, val_skipped, val_inputs = run_split("val", val_path, data_root / "val_manifest.csv", keypoint_root, args.cache_root, configs, args.limit)
+    train_records, train_skipped, train_inputs = run_split("train", train_path, data_root / "train_manifest.csv", keypoint_root, args.cache_root, configs, args.limit, args.variable_cache_root)
+    val_records, val_skipped, val_inputs = run_split("val", val_path, data_root / "val_manifest.csv", keypoint_root, args.cache_root, configs, args.limit, args.variable_cache_root)
     train_scores = [score_config([r for r in train_records if r["config_index"] == i], c, args.min_coverage) for i, c in enumerate(configs)]
     val_scores = [score_config([r for r in val_records if r["config_index"] == i], c, args.min_coverage) for i, c in enumerate(configs)]
     selected = select_config(val_scores)
@@ -354,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
                     "sample_count": len(train_inputs) + len(val_inputs),
                 },
                 "limit": args.limit,
+                "variable_cache_root": str(args.variable_cache_root) if args.variable_cache_root else None,
                 "outputs": ["calibration_report.json", "per_sample.csv", "selected_config.json", "input_tensors.jsonl"]}
     (args.output_dir / "run_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Selected validation config {selected_index}: {selected['overall_accuracy_abstain_wrong']:.4f} exact pair accuracy; coverage {selected['coverage']:.4f}")
