@@ -157,3 +157,19 @@ Nhận định còn nguyên: lỗi tập trung ở các cặp đếm click và p
 ## Validation của tài liệu
 
 Số liệu đọc trực tiếp từ gói kết quả, manifest, ZIP annotation và các ZIP ablation bằng script phân tích; các giả thuyết gắn nhãn [Lập luận]. Thay đổi code được kiểm thử bằng `pytest` (153 passed), kiểm tra tương thích ngược trên DATE-27 và smoke test huấn luyện trên dữ liệu nhỏ.
+
+## 8. Cập nhật 2026-10-27: đánh giá `--hand-features` trên validation ba seed
+
+Nguồn: kết quả notebook `IPN13_Hand_Features_Eval_Colab.ipynb` do người dùng chạy và dán lại (validation, 589 clip, seed 42/123/3407; test không được mở).
+
+| | Acc (mean ± sd) | Macro-F1 (mean ± sd) | Ensemble acc | Ensemble macro-F1 |
+|---|---:|---:|---:|---:|
+| `c_ref` | 87,32 ± 1,60 | 80,78 ± 2,71 | 89,47 | 83,95 |
+| `hand` | 86,08 ± 0,17 | 79,48 ± 1,32 | 88,12 | 81,58 |
+
+- Δ macro-F1 (hand − c_ref) theo seed: −5,5 (42), +2,4 (123), −0,9 (3407); trung bình −1,3. Kết quả lẫn lộn giữa các seed [Đã đo].
+- F1 trung bình qua seed của các lớp khó: G01 −0,057, G02 −0,005, G08 −0,043, G09 −0,137 (các lớp click đều không tăng); G10 +0,070 và G11 +0,068 (pinch tăng) [Đã đo].
+- Ensemble của `hand` thấp hơn ensemble của `c_ref` ở cả accuracy (−1,35 điểm) và macro-F1 (−2,4 điểm).
+- Kết luận: **không có bằng chứng `--hand-features` giúp**, và giả thuyết gốc (giúp đếm click) không được ủng hộ; chỉ có tín hiệu tăng ở pinch (G10/G11) [Lập luận: nhất quán với thiết kế, nhưng mỗi lớp chỉ 28 clip validation và chưa kiểm tra trên test]. Mặc định không bật `--hand-features`.
+
+Validation của mục này: chỉ chép số từ kết quả notebook; không đổi code.

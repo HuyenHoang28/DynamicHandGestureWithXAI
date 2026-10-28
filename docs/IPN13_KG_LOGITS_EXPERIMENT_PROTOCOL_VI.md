@@ -171,3 +171,13 @@ Chỉ thêm tùy chọn và script mới; checkpoint và đầu ra cũ không đ
 
 ### Validation
 `tests/test_v4_ensemble.py` (4 test) và bộ test đầy đủ; chạy thử các ô huấn luyện, đánh giá, bảng cặp, ensemble, bỏ qua test và đóng gói ZIP trên dữ liệu DATE nhỏ cục bộ (2 seed, kiến trúc nhỏ); `--save-logits` và ensemble chạy từ đầu đến cuối. Chưa chạy trên IPN thật (cần Colab).
+
+## 2026-10-27: notebook đánh giá `--hand-features`
+
+**Thay đổi.** Thêm `notebooks/IPN13_Hand_Features_Eval_Colab.ipynb`, bản rút gọn của notebook sweep chỉ gồm `c_ref` và `hand`. Dùng lại các run đã có `SWEEP_RUN_COMPLETE.json` trên Drive, đánh giá validation từng seed và ensemble, so sánh theo cặp từng seed (Δ macro-F1, Δ accuracy), in F1 trung bình các lớp G01/G02/G08/G09/G10/G11, và chỉ in "có dấu hiệu giúp" khi mọi seed tăng và trung bình lớn hơn 0,01 macro-F1.
+
+**Lý do.** Checkpoint `hand` ba seed đã train nhưng chưa có đánh giá validation đầy đủ; số hiện có lấy từ `history.json` và nằm trong dao động seed.
+
+**Tương thích và an toàn.** Không đổi code Python; test mặc định khóa (`RUN_LOCKED_TEST=False`), ZIP ra `runs/ipn13_hand_features/`, từ chối ghi đè.
+
+**Validation.** Notebook sinh từ notebook sweep đã kiểm thử; mọi ô code biên dịch được. Chưa chạy trên Colab với dữ liệu IPN thật.
