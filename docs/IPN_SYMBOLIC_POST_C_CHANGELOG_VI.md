@@ -254,3 +254,19 @@ Validation cuối: focused suite `55 passed`; full repository suite `123 passed`
 - Lý do: detector click gần ngẫu nhiên (0,40–0,54 trên train) khi chạy trên tensor T64; tài liệu temporal factor đã nêu rủi ro là resample làm méo chu kỳ. Cần tách nguyên nhân "mất tín hiệu do resample" khỏi "tín hiệu closure không phân biệt 1 và 2 click" trước khi đầu tư vào pair-residual và fusion.
 - Tương thích/an toàn: mặc định không đổi (không có cờ thì dùng tensor T64 và grid cũ). Script vẫn chỉ nhận `train.txt`/`val.txt`, không có đường đọc test. Chọn config chỉ bằng validation; ngưỡng chấp nhận đặt trước khi xem kết quả. Pair-residual và V3 vẫn tắt.
 - Validation: `python -m unittest tests.test_calibrate_variable_cache` pass (đọc đúng cache full-length không cần keypoint JSON, grid có cùng khóa với grid cũ); notebook parse và mọi cell code qua `ast`. Chưa có số liệu accuracy vì cache đầy đủ chỉ có trên Drive; cần chạy notebook trên Colab (push nhánh trước).
+
+### Kết quả calibration click full-rate (validation, 56 clip mỗi cặp, 2026-10-28)
+
+| Cặp | Chế độ | Coverage | Acc trên phần được phủ | Acc (bỏ qua = sai) |
+|---|---|---:|---:|---:|
+| G01/G08 | t64 | 0,482 | 0,704 | 0,339 |
+| G01/G08 | fullrate | 0,429 | 0,792 | 0,339 |
+| G02/G09 | t64 | 0,446 | 0,400 | 0,179 |
+| G02/G09 | fullrate | 0,429 | 0,417 | 0,179 |
+| G10/G11 | t64 | 0,893 | 0,920 | 0,821 |
+| G10/G11 | fullrate | 0,857 | 0,917 | 0,786 |
+
+- Phân bố số click đếm được (fullrate): G01 {0:11, 1:10, 2:1, 3:6}; G08 {0:9, 1:4, 2:9, 3+:6}; G02 {0:17, 1:8, 2:2, 3:1}; G09 {0:14, 1:12, 2:2}. Với `t64` gần như giống hệt.
+- Kết luận theo tiêu chí đặt trước (coverage ≥ 0,50 và acc trên phần được phủ ≥ 0,75 ở cả hai cặp click): **cả hai chế độ KHÔNG ĐẠT**. Resample về 64 frame không phải nguyên nhân chính; cặp click vẫn không dùng được, pair-residual và fusion với detector này không được triển khai.
+- Quan sát: 11/28 clip G01 và 17/28 clip G02 không phát hiện được click nào; G02/G09 (hai ngón) dưới mức ngẫu nhiên trên phần được phủ. Pinch giữ nguyên chất lượng cũ nhưng đã được neural giải quyết. Mỗi cặp chỉ 56 clip validation nên khoảng tin cậy rộng (acc trên phần được phủ của G01/G08 dựa trên khoảng 24 clip).
+- Giả thuyết chưa kiểm chứng: tín hiệu khoảng cách đầu ngón–gốc ngón trong keypoint 2D không phản ánh động tác click (click hướng vào camera, biên độ nhỏ trong mặt phẳng ảnh).

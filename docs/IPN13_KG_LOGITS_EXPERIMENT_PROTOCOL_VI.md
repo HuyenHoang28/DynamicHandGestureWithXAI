@@ -181,3 +181,10 @@ Chỉ thêm tùy chọn và script mới; checkpoint và đầu ra cũ không đ
 **Tương thích và an toàn.** Không đổi code Python; test mặc định khóa (`RUN_LOCKED_TEST=False`), ZIP ra `runs/ipn13_hand_features/`, từ chối ghi đè.
 
 **Validation.** Notebook sinh từ notebook sweep đã kiểm thử; mọi ô code biên dịch được. Chưa chạy trên Colab với dữ liệu IPN thật.
+
+## 2026-10-28: nhãn phụ số lần click / số ngón (`--aux-heads`)
+
+- Thay đổi: `NeuralOnlyClassifier` có tham số `aux_heads` (mặc định tắt) thêm hai đầu tuyến tính trên vector pooled; `forward(..., return_aux=True)` trả `(logits, {"count","fingers"})`. `train_neural_only.py` thêm `--aux-heads` và `--aux-weight` (mặc định 0,3): loss = CE(13 lớp) + w × (CE số lần click + CE số ngón), tính chỉ trên clip G01/G02/G08/G09 (số lần click: G01,G02 = 1, G08,G09 = 2; số ngón: G01,G08 = 1, G02,G09 = 2); lớp khác bị bỏ qua. Chỉ dùng được với IPN-13 (id cố định). Checkpoint lưu **không** có đầu phụ (`aux_heads=False`, thêm `trained_with_aux_heads`), nên `test_neural_only.py`, `ensemble_neural_only.py` và mọi loader cũ chạy nguyên. Thêm notebook `notebooks/IPN13_Aux_Heads_Eval_Colab.ipynb` (c_ref dùng lại từ Drive, `aux` 3 seed 42/123/3407, so theo cặp seed, F1 lớp click/pinch, tổng clip nhầm G01↔G08 và G02↔G09 qua 3 seed).
+- Lý do: detector click bằng luật không đạt ở cả T64 lẫn tốc độ gốc; thử học "đếm" trực tiếp bằng cách chia sẻ dữ liệu giữa các lớp (khoảng 464 clip mỗi giá trị nhãn phụ thay vì 232 mỗi lớp) [Lập luận].
+- Tương thích/an toàn: mặc định tắt, huấn luyện c_ref không đổi (đầu phụ khởi tạo sau classifier nên không đổi trọng số khởi tạo của phần còn lại). Chỉ validation; test khóa. Không thêm nhãn mới vào dữ liệu: nhãn phụ suy ra từ nhãn lớp.
+- Validation: `python -m unittest tests.test_aux_heads tests.test_train_variable_length` pass 9/9 (ánh xạ nhãn, loss bỏ qua lớp khác, shape đầu phụ, state dict đã lọc nạp được vào model thường, cờ CLI). Chưa train trên dữ liệu thật. Tiêu chí kết luận: macro-F1 dương ở cả 3 seed và trung bình > 0,01; sd giữa seed khoảng 0,027 nên chênh nhỏ hơn không kết luận.

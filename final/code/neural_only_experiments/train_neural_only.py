@@ -11,6 +11,34 @@ from dataset import NeuralOnlyKeypointDataset, collate_batch, label_names_from_s
 from models import NeuralOnlyClassifier
 
 
+# IPN-13 ids: B0A=0, B0B=1, G01..G11=2..12. Click gestures factor into (finger count) x (click count).
+IGNORE_AUX = -100
+CLICK_COUNT_TARGET = {2: 0, 3: 0, 9: 1, 10: 1}   # G01, G02 -> one click; G08, G09 -> two clicks
+FINGER_COUNT_TARGET = {2: 0, 9: 0, 3: 1, 10: 1}  # G01, G08 -> one finger; G02, G09 -> two fingers
+
+
+def auxiliary_targets(labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Derive click-count / finger-count targets from IPN-13 labels; other classes are ignored."""
+    count = torch.full_like(labels, IGNORE_AUX)
+    fingers = torch.full_like(labels, IGNORE_AUX)
+    for label, value in CLICK_COUNT_TARGET.items():
+        count[labels == label] = value
+    for label, value in FINGER_COUNT_TARGET.items():
+        fingers[labels == label] = value
+    return count, fingers
+
+
+def auxiliary_loss(aux: dict, labels: torch.Tensor) -> torch.Tensor:
+    """Mean cross-entropy of the two auxiliary heads over the clips that have a target (0 if none)."""
+    count_target, finger_target = auxiliary_targets(labels)
+    total = aux["count"].sum() * 0.0
+    for name, target in (("count", count_target), ("fingers", finger_target)):
+        valid = target != IGNORE_AUX
+        if valid.any():
+            total = total + nn.functional.cross_entropy(aux[name][valid], target[valid])
+    return total
+
+
 def macro_f1(predictions: list[int], labels: list[int], num_classes: int) -> float:
     scores = []
     for class_id in range(num_classes):
@@ -144,6 +172,8 @@ def train(args: argparse.Namespace) -> None:
         torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
+    if args.aux_heads and args.num_classes != 13:
+        raise ValueError("--aux-heads uses the IPN-13 click label ids and needs --num-classes 13")
     train_set = NeuralOnlyKeypointDataset(args.train_file, args.cache_root, "train", args.num_frames, args.limit_train)
     val_set = NeuralOnlyKeypointDataset(args.val_file, args.cache_root, "val", args.num_frames, args.limit_val)
     validate_no_split_overlap(train_set.samples, val_set.samples)
@@ -177,6 +207,7 @@ def train(args: argparse.Namespace) -> None:
         use_motion_features=not args.disable_motion_features,
         pooling=args.pooling,
         hand_features=args.hand_features,
+        aux_heads=args.aux_heads,
     ).to(device)
     if torch.cuda.is_available() and torch.cuda.device_count() > 1 and args.data_parallel:
         print(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
@@ -220,8 +251,12 @@ def train(args: argparse.Namespace) -> None:
                 shift_std=args.shift_std,
             )
             optimizer.zero_grad(set_to_none=True)
-            logits = model(x)
-            loss = criterion(logits, y)
+            if args.aux_heads:
+                logits, aux = model(x, return_aux=True)
+                loss = criterion(logits, y) + args.aux_weight * auxiliary_loss(aux, y)
+            else:
+                logits = model(x)
+                loss = criterion(logits, y)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
@@ -274,9 +309,13 @@ def train(args: argparse.Namespace) -> None:
             f"lr={','.join(f'{value:.2e}' for value in learning_rates)} "
             f"patience={epochs_without_improvement}/{args.early_stop_patience}"
         )
+        state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+        # Auxiliary heads are training-only: dropping them keeps evaluation scripts and old loaders unchanged.
+        state = {key: value for key, value in state.items() if not key.startswith(("count_head.", "finger_head."))}
+        saved_args = {**vars(args), "aux_heads": False, "trained_with_aux_heads": bool(args.aux_heads)}
         checkpoint = {
-            "model": model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
-            "args": vars(args),
+            "model": state,
+            "args": saved_args,
             "label_names": label_names,
             "epoch": epoch,
             "val": val_metrics,
@@ -327,6 +366,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Append scale-invariant finger flexion / pinch geometry and its frame-to-frame change.",
     )
+    parser.add_argument(
+        "--aux-heads",
+        action="store_true",
+        help="Train two auxiliary heads (click count 1/2, finger count 1/2) on the pooled vector; IPN-13 only.",
+    )
+    parser.add_argument("--aux-weight", type=float, default=0.3, help="Weight of the auxiliary loss.")
     parser.add_argument(
         "--time-crop-min",
         type=float,

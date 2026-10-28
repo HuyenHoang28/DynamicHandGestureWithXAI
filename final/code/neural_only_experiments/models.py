@@ -153,6 +153,7 @@ class NeuralOnlyClassifier(nn.Module):
         use_motion_features: bool = True,
         pooling: str = "attention",
         hand_features: bool = False,
+        aux_heads: bool = False,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -197,12 +198,18 @@ class NeuralOnlyClassifier(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(d_model, num_classes),
         )
+        # Optional training-only heads on the pooled vector: click count (1 vs 2) and finger count (1 vs 2).
+        self.aux_heads = aux_heads
+        if aux_heads:
+            self.count_head = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, 2))
+            self.finger_head = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, 2))
 
     def forward(
         self,
         keypoints: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
         velocity: torch.Tensor | None = None,
+        return_aux: bool = False,
     ) -> torch.Tensor:
         batch, frames, keypoints_count, dims = keypoints.shape
         if keypoints_count != self.num_keypoints or dims != self.input_dims:
@@ -271,4 +278,9 @@ class NeuralOnlyClassifier(nn.Module):
             scores = torch.where(all_invalid.unsqueeze(1), torch.zeros_like(scores), scores)
             weights = scores.softmax(dim=1)
             pooled = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
-        return self.classifier(pooled)
+        logits = self.classifier(pooled)
+        if return_aux:
+            if not self.aux_heads:
+                raise ValueError("return_aux requires a model built with aux_heads=True")
+            return logits, {"count": self.count_head(pooled), "fingers": self.finger_head(pooled)}
+        return logits
