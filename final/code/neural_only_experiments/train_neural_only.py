@@ -343,7 +343,7 @@ def train(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backbone", choices=["transformer", "tcn", "bigru", "mlp_mixer"], default="transformer")
+    parser.add_argument("--backbone", choices=["transformer", "tcn", "bigru", "lstm", "mlp_mixer"], default="transformer")
     parser.add_argument("--cache-root", type=Path, required=True)
     parser.add_argument("--train-file", type=Path, default=Path("train.txt"))
     parser.add_argument("--val-file", type=Path, default=Path("val.txt"))

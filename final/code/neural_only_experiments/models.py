@@ -96,6 +96,25 @@ class BiGRUEncoder(nn.Module):
         return self.norm(self.proj(x))
 
 
+class LSTMEncoder(nn.Module):
+    """Unidirectional stacked LSTM baseline (IPN HandS style: 3 layers, hidden size = d_model)."""
+
+    def __init__(self, d_model: int, layers: int, dropout: float) -> None:
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=d_model,
+            hidden_size=d_model,
+            num_layers=layers,
+            batch_first=True,
+            dropout=dropout if layers > 1 else 0.0,
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x, _ = self.lstm(x)
+        return self.norm(x)
+
+
 class MixerBlock(nn.Module):
     def __init__(self, num_frames: int, d_model: int, dropout: float) -> None:
         super().__init__()
@@ -179,6 +198,8 @@ class NeuralOnlyClassifier(nn.Module):
             self.encoder = TCNEncoder(d_model, layers, dropout, num_frames)
         elif backbone == "bigru":
             self.encoder = BiGRUEncoder(d_model, layers, dropout, num_frames)
+        elif backbone == "lstm":
+            self.encoder = LSTMEncoder(d_model, layers, dropout)
         elif backbone == "mlp_mixer":
             self.encoder = MLPMixerEncoder(d_model, layers, dropout, num_frames)
         else:
