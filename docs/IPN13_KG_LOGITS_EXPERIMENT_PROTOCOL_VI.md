@@ -195,3 +195,43 @@ Chỉ thêm tùy chọn và script mới; checkpoint và đầu ra cũ không đ
 - Lý do: cần baseline skeleton so sánh được với bài. Số của các paper (AG-MAE, SkelMAE, ST-SGCN, ASCA-STGCN, MediaPipe+RNN, IPN HandS) dùng protocol, số lớp, nguồn keypoint và số mẫu khác nên không so trực tiếp; chạy lại các kiến trúc đơn giản trên cùng dữ liệu và split của project cho so sánh công bằng.
 - Tương thích/an toàn: checkpoint cũ không đổi; `backbone=lstm` chỉ chạy với 52 keypoint, 64 frame resample, đầu vào 52 điểm thay vì 21 điểm một tay như paper; pooling `masked_mean` thay vì trạng thái ẩn cuối. `lstm_paper` giữ siêu tham số của paper nhưng không tái tạo đầu vào 21 điểm một tay (chưa làm). Chưa dò siêu tham số riêng cho từng baseline.
 - Validation: `python -m unittest tests.test_lstm_backbone tests.test_aux_heads` pass; kiểm tra forward của lstm/bigru/tcn/mlp_mixer/transformer. Chưa train trên dữ liệu thật.
+
+### Kết quả `--aux-heads` (validation, 3 seed 42/123/3407, 2026-10-29)
+
+- Hiệu aux − c_ref theo seed: macro-F1 −0,0406 / −0,0016 / −0,0125 (trung bình −0,0182), accuracy −0,0204 / −0,0102 / −0,0068. Âm ở cả 3 seed nhưng độ lớn nằm trong dao động seed (sd macro-F1 khoảng 0,027) [Đã đo]: không có bằng chứng giúp; chưa đủ để nói hại chắc chắn.
+- F1 lớp khó (c_ref → aux): G01 0,592→0,498, G02 0,608→0,593, G08 0,664→0,630, G09 0,685→0,671, G10 0,762→0,750, G11 0,788→0,767. Số clip nhầm cộng 3 seed: G01↔G08 45→49, G02↔G09 35→40, tức không giảm ở cả hai cặp.
+- Kết luận: giả thuyết "chia sẻ dữ liệu qua nhãn phụ số lần click/số ngón giúp đếm" không được ủng hộ. Mặc định giữ `--aux-heads` tắt.
+- Tổng hợp các thử nghiệm riêng cho click đến nay, đều không cải thiện cặp G01↔G08 và G02↔G09: đặc trưng hình học bàn tay (`--hand-features`), chuỗi biến độ dài 256 frame, detector click bằng luật ở tốc độ gốc, nhãn phụ số lần click. Gợi ý rằng giới hạn nằm ở thông tin trong keypoint 2D hoặc ở nhãn/mốc thời gian, không phải ở thủ thuật mô hình [Lập luận]. Paper IPN HandS nêu mốc thời gian gốc của IPN thường cắt không đủ chuyển động ở các cử chỉ ngắn, tinh tế, nên nhiễu nhãn là giả thuyết cần kiểm tra bằng xem lại các clip bị nhầm.
+
+### Phân tích lỗi click trên validation bằng predictions của c_ref 3 seed (2026-10-29)
+
+Nguồn: `val_eval/predictions.csv` của `c_ref_seed42/123/3407` (trong `results/experiments/ipn13/neural_sweep_upload/`), 112 clip G01/G02/G08/G09 (28 mỗi lớp). Độ dài clip lấy từ khoảng frame trong tên file. Không có thay đổi code.
+
+- Có 26/112 clip mà cả 3 seed đều sai. Chia theo lớp: G01 9/28, G02 10/28, G08 3/28, G09 4/28 [Đã đo]. Hầu hết bị đoán thành lớp "hai lần" tương ứng (G01→G08 6/9, G02→G09 6/10).
+- Độ dài trung bình (frame): G01 luôn đúng 34, luôn sai 61; G02 luôn đúng 39, luôn sai 65; G08 luôn đúng 56, luôn sai 80; G09 luôn đúng 53, luôn sai 88 [Đã đo]. Clip một-click dài bị đoán thành hai-click, clip hai-click dài khác thường bị đoán sai theo hướng khác.
+- Phân bố độ dài của hai lớp chồng lấn nhiều: G01 p25/p50/p75 = 27/43/51 so với G08 43/56/70; G02 33/46/63 so với G09 43/52/67 [Đã đo].
+- Chỉ dùng độ dài clip với ngưỡng chọn tốt nhất trên chính validation (cận trên lạc quan) đạt 0,661 ở cả G01/G08 và G02/G09; neural c_ref đúng nhãn trên cùng 56 clip mỗi cặp ở mức 0,619 và 0,637 (trung bình 3 seed) [Đã đo]. Gợi ý (chưa chứng minh) rằng c_ref chủ yếu dùng độ dài như dấu hiệu "đếm click", không đọc được số lần bấm.
+- Theo camera, recall trung bình của clip một-click thấp ở 4CM11 và 1CM42 (G01: 0,29 và 0,50; G02: 0,42 và 0,44) so với 1CV12 (0,75 và 0,83) [Đã đo; n = 8–12 clip mỗi ô].
+- Chưa xem được nội dung video; nhãn đúng/sai của từng clip chưa kiểm chứng bằng mắt.
+
+- Quan sát xem tay trên video (người dùng, 2026-10-29): ở các clip G01/G02 bị đoán thành hai-click, người thực hiện giơ tay rồi gập tay xuống ngay trong khoảng clip, và chuyển động gập xuống này giống động tác click. Nghĩa là mốc thời gian của clip gồm cả pha chuẩn bị/thu tay, không chỉ pha click, nên clip dài hơn và chứa chuyển động giống click thừa. Phù hợp với nhận xét của paper IPN HandS về mốc thời gian gốc của IPN [Lập luận; chưa đếm tỉ lệ trên toàn bộ 26 clip luôn sai].
+
+- Kiểm tra mốc cắt (2026-10-29, không đổi code): cả 4.133 dòng `external_data/ipn_processed/manifest.csv` có `(video, t_start, t_end)` trùng chính xác một khoảng trong `annotations/Annot_List.txt` gốc của IPN (0 dòng lệch) và `frames = t_end − t_start + 1` ở mọi dòng [Đã đo]. `scripts/cut_ipn_clips.py` giải mã tuần tự đến frame bắt đầu (không seek theo keyframe) và kiểm tra số frame ghi/giải mã bằng số frame mong đợi, nên khoảng cắt khớp annotation gốc. Do đó phần chuyển động thừa (giơ tay, gập tay) nằm trong chính mốc của IPN chứ không do bước cắt của project [Lập luận từ kiểm tra trên và quan sát video của người dùng].
+
+- Kiểm tra một clip cụ thể (2026-10-29, không đổi code): `val/G01/4CM11_14/4CM11_14_R_24_G01_f002201_f002291` (91 frame; G01 trung vị toàn bộ annotation là 48 frame). So pixel clip với video gốc `4CM11_14_R_#24.avi`: frame đầu của clip khớp frame 2201 (1-based), frame cuối khớp frame 2291 (sai số trung bình khoảng 1,2 mức xám do nén lại MJPG), đủ 91 frame giải mã [Đã đo], tức bước cắt trung thực với annotation. Xem 12 frame trải đều: những frame đầu (2201–2209) là tư thế chỉ một ngón (giống B0A), tiếp theo có chuyển động hạ tay/ngón xuống, ngón giơ lại (2241–2258), một chuyển động xuống nữa (2266–2274), rồi hai ngón giơ (2282, giống B0B) [quan sát bằng mắt từ một contact sheet, chưa kiểm hệ thống]. Annotation gốc liền kề: B0A 2039–2200, G01 2201–2291, B0B 2292–2467. Cả 3 seed c_ref đoán clip này là B0A. Clip có nhãn G01 nhưng chứa cả đoạn đầu giống B0A, nhiều hơn một chuyển động xuống, và đoạn chuyển sang hai ngón [Lập luận: nguồn gốc nhiễu nằm ở mốc annotation].
+
+### Kiểm tra chuyển động của mọi clip click (2026-10-29)
+
+Thêm `scripts/analyze_click_clip_motion.py`: với mọi clip G01/G02/G08/G09 trong `external_data/ipn_processed/clips` (train, val, test; 784 clip, 196 mỗi lớp) đo năng lượng chuyển động toàn khung theo thời gian bằng hiệu hai frame liên tiếp (ảnh xám 160×120, làm mượt 5 frame), rồi tính: số frame đứng yên ở đầu/đuôi, tỉ lệ frame hoạt động (> 30% đỉnh) và số đợt chuyển động (đỉnh ≥ 40% đỉnh lớn nhất, cách nhau ≥ 7 frame). Chỉ là phân tích mô tả chất lượng dữ liệu, không dùng để huấn luyện hay chọn mô hình. Đây là proxy thô (chuyển động cả thân cũng được tính), không phải detector click.
+
+- Số đợt chuyển động trung bình: G01 3,56 so với G08 4,68; G02 3,58 so với G09 4,79. Tỉ lệ clip có ≥ 3 đợt: G01 0,68, G08 0,92, G02 0,71, G09 0,95 [Đã đo]. Hầu hết clip một-click đã có từ 3 đợt trở lên, nên số đợt không phân biệt rõ một và hai click.
+- Validation: 26 clip luôn sai (3 seed) so với 86 clip còn lại: độ dài 69,0 so với 51,5 frame; số frame đứng yên ở đầu 4,15 so với 0,83; tỉ lệ frame hoạt động 0,63 so với 0,81 [Đã đo]. Clip G01 luôn sai có 4,22 đợt so với 2,89 ở clip còn lại (n = 9 và 19).
+- 108/392 clip một-click (27,6%) dài ≥ 90 frame hoặc có ≥ 5 đợt chuyển động (train 67, val 12, test 29); ngưỡng tùy ý, chỉ để định cỡ [Đã đo].
+- Giới hạn: chưa xem bằng mắt từng clip; chỉ số trên là proxy từ khác biệt pixel.
+
+## 2026-11-02: notebook trích RTMW cho subject 1CM42_3
+
+- Thay đổi: thêm `notebooks/IPN_RTMW_Extract_1CM42_3_Colab.ipynb`, trích RTMW cho 85 clip của subject `1CM42_3` bằng đúng `run_rtmw_splits_dual.py`, đúng checkpoint `rtmw-dw-x-l_simcc-cocktail14_270e-384x288` và cờ mặc định (mirror-swap) như lần trích gốc. Đầu vào là `clips_1CM42_3.zip` (tạo bằng `create_ipn_manifest.py --include-all-subjects` rồi `cut_ipn_clips.py` cho 85 dòng của `1CM42_3`, 12.702 frame). Kết quả ghi vào thư mục tạm `ipn-extract-data/keypoints_1CM42_3_staging/` trên Drive, không đụng `keypoints/`; có cell thống kê vai (điểm tin cậy, tỉ lệ frame đúng một vai < 0,3, độ rộng vai theo pixel) đối chiếu với subject `1CM42_4`; cell ghép vào `keypoints/` mặc định tắt (`MERGE = False`).
+- Lý do: kiểm tra trên Drive cho thấy không có keypoint nào của `1CM42_3` (manifest gốc loại subject này), nên bộ IPN gốc 13 lớp đang thiếu 85 clip (4.133 so với 4.218 instance trong paper). Cần keypoint RTMW của subject này để so sánh với các baseline dùng đủ 4.218 clip, và để quyết định hạ ngưỡng điểm vai hay dùng bộ ước lượng vai.
+- Tương thích/an toàn: không sửa code hay file hiện có; val/test không đổi (đã kiểm tra: subject validation và test giống hệt khi bỏ loại trừ, train thêm 85 clip: 2.443 → 2.528). Notebook từ chối ghi đè staging nếu đã tồn tại.
+- Validation: notebook parse hợp lệ, cell code Python qua `ast`; chưa chạy trên Colab (cần GPU và file zip trên Drive).

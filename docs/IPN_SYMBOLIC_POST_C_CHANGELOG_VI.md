@@ -270,3 +270,12 @@ Validation cuối: focused suite `55 passed`; full repository suite `123 passed`
 - Kết luận theo tiêu chí đặt trước (coverage ≥ 0,50 và acc trên phần được phủ ≥ 0,75 ở cả hai cặp click): **cả hai chế độ KHÔNG ĐẠT**. Resample về 64 frame không phải nguyên nhân chính; cặp click vẫn không dùng được, pair-residual và fusion với detector này không được triển khai.
 - Quan sát: 11/28 clip G01 và 17/28 clip G02 không phát hiện được click nào; G02/G09 (hai ngón) dưới mức ngẫu nhiên trên phần được phủ. Pinch giữ nguyên chất lượng cũ nhưng đã được neural giải quyết. Mỗi cặp chỉ 56 clip validation nên khoảng tin cậy rộng (acc trên phần được phủ của G01/G08 dựa trên khoảng 24 clip).
 - Giả thuyết chưa kiểm chứng: tín hiệu khoảng cách đầu ngón–gốc ngón trong keypoint 2D không phản ánh động tác click (click hướng vào camera, biên độ nhỏ trong mặt phẳng ảnh).
+
+## 2026-11-02: adapter IPN HandS GT cho pipeline C → V4
+
+- Thay đổi: thêm adapter chuyển landmark GT liên tục và temporal annotation chính thức của IPN HandS thành raw clip JSON canonical 52 điểm; thêm CLI chuẩn bị dữ liệu, manifest/split/report và unit test mapping/end-to-end.
+- Lý do: cần huấn luyện lại đúng nhánh neural C và nhánh symbolic/fusion V4 trên HandS thay vì tái sử dụng keypoint, tensor cache hoặc instance graph RTMW cũ.
+- Tương thích/an toàn: giữ protocol subject cũ; ánh xạ class HandS 1..13 sang B0A/B0B/G01..G11; loại có chủ đích NOG và GRB vì model/template hiện tại có 13 lớp. Handedness giữ theo giải phẫu HandS, wrist lấy từ hand root, `face-8` dùng midpoint mouth corner 9/10. Vì HandS không phát hành confidence, `score=1.0` chỉ biểu diễn điểm được phát hành hiện diện, không phải detector confidence; hand x/y đã sửa thủ công nhưng pose phụ trợ chưa sửa.
+- Kết quả chuyển đổi: 4.540 clip (2.649 train, 650 validation, 1.241 test), 29/7/13 subject không giao nhau, đủ 13 lớp; loại 2.545 NOG, 534 GRB và bốn video của subject bị loại theo protocol.
+- Review/an toàn: bổ sung preflight tập video chính xác, frame key và annotation phủ liên tục toàn video; fingerprint input/data-contract; trạng thái chuyển đổi atomic; từ chối `--overwrite` khi đã có tensor cache hoặc instance graph để tránh dùng tensor cũ với JSON mới.
+- Validation tại thời điểm ghi: focused adapter suite 13 passed; manifest và file tồn tại được đối chiếu đầy đủ. Tensor cache, instance graph và các lần train/test mới là artifact cục bộ, không được stage; kết quả train/fusion sẽ được bổ sung sau khi chạy xong.

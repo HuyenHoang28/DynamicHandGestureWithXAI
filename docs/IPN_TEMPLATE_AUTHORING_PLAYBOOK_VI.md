@@ -187,3 +187,31 @@ Với các cặp `G01/G08`, `G02/G09`, `G10/G11`, không dùng số directional 
 Không bật V3 bằng cách thay trực tiếp template V2 trong một run cũ. Predicate config, graph provenance và template version phải cùng V3. Trước khi tích hợp classifier, báo coverage, exact count/direction accuracy, score margin, beneficial/harmful/net corrections trên validation.
 
 Khi đưa temporal factor vào classifier, ưu tiên pair-residual: chỉ sửa hai logits của cặp neural top-2 hợp lệ và giữ nguyên mọi lớp khác. Không dùng global fusion để ép factor yếu tác động lên cả 13 lớp. Chi tiết kiến trúc và validation gate nằm trong `IPN_TEMPORAL_FACTORS_PAIR_RESIDUAL_ARCHITECTURE_VI.md`.
+
+## 2026-11-02: template GRB và bộ 14 template cho IPN HandS
+
+### Thay đổi
+
+- File mới `configs/ipn/gesture_templates_14.yaml`: bản sao của `gesture_templates.yaml` hiện tại kèm mục `GRB` (label id 13). File 13 lớp không đổi. Dựng 14 template vào `external_data/ipn_hands_full14/template_graphs_14` bằng `build_template_graph.py` với `--list-file` của bộ `ipn_hands_full14` (id nhãn lấy từ đường dẫn clip, `GRB` = 13).
+- Template `GRB`: một event, `hand_shapes.required = hand_open` và `finger_motions.required = fingers_spread_decreasing`, không có negative evidence.
+- Hàng đợi V4 14 lớp: `results/runs/ipn_hands_full14/RUN_QUEUE_V4.ps1` (tự bắt đầu sau khi hàng đợi neural C xong).
+
+### Lý do và cách chọn
+
+Bản nháp đầu dùng `hand_closed` (theo mục G07) nhưng tên này không có trong bộ predicate hiện tại (tên thật là `hand_fist_like`), nên điểm template `GRB` bằng 0 trên mọi clip (AUC 0,500). Mình thử bốn biến thể, **chọn theo train** rồi đối chiếu validation (không dùng test):
+
+| Biến thể | AUC train | AUC val | GRB>0 (train) | khác>0 (train) |
+|---|---:|---:|---:|---:|
+| `hand_closed` (bản nháp) | 0,500 | 0,500 | 0,00 | 0,00 |
+| `hand_open` bắt buộc | 0,840 | 0,844 | 0,81 | 0,36 |
+| `hand_open` bắt buộc + `hand_fist_like` ưu tiên | 0,829 | 0,838 | 0,81 | 0,36 |
+| `hand_open` + `fingers_spread_decreasing` đều bắt buộc (chọn) | 0,847 | 0,850 | 0,78 | 0,20 |
+
+Dữ liệu trên 725 clip validation: `hand_open` xuất hiện ở 81% clip GRB so với 38% clip khác; `hand_fist_like` ở 88% so với 99% nên không phân biệt.
+
+### Tương thích và hạn chế
+
+- Đây là bản nháp, chưa hiệu chỉnh kỹ: AUC 0,85 cho một-chọi-tất-cả của template GRB; accuracy so khớp luật thô của toàn bộ 14 template trên validation vẫn rất thấp (B0A đúng 147/172, hầu hết lớp còn lại gần 0), tức nhánh symbolic luật không dùng được làm bộ phân loại, V4 học trọng số từ dữ liệu.
+- `scripts/eval_ipn_template_matching.py` còn khóa cứng 13 lớp nên chưa dùng được cho 14 lớp; phân tích dùng `graph_matching.score_template` trực tiếp.
+- Template 14 lớp dựng từ YAML hiện tại (sau commit sửa click đơn/đôi), khác YAML đã dựng `template_graphs_v2` và artifact c46 (hash khác), nên V4 14 lớp không so được với V4 cũ ở phần template.
+- Validation: V4 chạy thử 1 epoch với `--num-classes 14` và template 14 trên một phần nhỏ dữ liệu thành công.
