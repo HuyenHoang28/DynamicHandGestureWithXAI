@@ -2,8 +2,6 @@
 
 Folder nay dung de thu rieng nhanh neural, khong dung Instance KG va Template KG.
 
-Google Colab notebook: [`../../../notebooks/Neural_Only_Improved_Colab.ipynb`](../../../notebooks/Neural_Only_Improved_Colab.ipynb).
-
 Input van la tensor keypoint:
 
 ```text

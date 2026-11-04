@@ -1,7 +1,7 @@
 """Sparse pair-residual correction for the three hard IPN-13 pairs.
 
-Implements the contract in ``docs/IPN_TEMPORAL_FACTORS_PAIR_RESIDUAL_ARCHITECTURE_VI.md``
-section 6 as a deterministic post-hoc layer on top of a neural classifier:
+Implements the contract in ``docs/NHAT_KY_THAY_DOI_VI.md``
+(section 4; the original contract is in the git history) as a deterministic post-hoc layer on top of a neural classifier:
 
 * it only acts when the neural top-2 classes are exactly one configured pair,
   the neural margin is small, and a temporal factor gives a decisive,

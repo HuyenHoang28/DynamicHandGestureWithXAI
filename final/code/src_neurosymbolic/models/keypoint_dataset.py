@@ -266,6 +266,8 @@ class KeypointSequenceDataset(Dataset):
                 continue
             label = parts[idx + 1]
             filename = Path(parts[-1]).stem
+            # Split lists with repo-relative paths: <split>/<label>/<subject>/<clip>.json under the graph root.
+            candidates.append(self.instance_graph_root / Path(*parts[idx:]).with_suffix(".json"))
             prefix = f"{label}_"
             rest = filename[len(prefix) :] if filename.startswith(prefix) else filename
             tokens = rest.split("_")

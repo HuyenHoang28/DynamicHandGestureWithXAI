@@ -4,13 +4,7 @@ Repo này chứa bản code gọn để người khác clone về chạy lại p
 
 Data cache và checkpoint không được commit trực tiếp vào GitHub để repo nhẹ, dễ clone, và tránh giới hạn dung lượng. Sau khi clone, người dùng cần tải/copy data vào đúng đường dẫn như phần bên dưới.
 
-Để hiểu pipeline IPN 13 lớp hiện tại từ dữ liệu, neural, pooling và augmentation đến symbolic/fusion, đọc [Handbook toàn diện IPN neuro-symbolic](docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md). Quy trình viết, kiểm chứng và tích hợp template nằm trong [Playbook template IPN 13 lớp](docs/IPN_TEMPLATE_AUTHORING_PLAYBOOK_VI.md).
-
-Notebook Colab để huấn luyện/đánh giá learned `kg_logits` trên IPN-13 và so
-sánh với neural-only baseline nằm tại
-[`notebooks/IPN13_KG_Logits_Baseline_Comparison_Colab.ipynb`](notebooks/IPN13_KG_Logits_Baseline_Comparison_Colab.ipynb).
-Protocol chống test leakage và cách đọc kết quả được mô tả tại
-[`docs/IPN13_KG_LOGITS_EXPERIMENT_PROTOCOL_VI.md`](docs/IPN13_KG_LOGITS_EXPERIMENT_PROTOCOL_VI.md).
+Tài liệu dự án gồm hai tệp: [Kiến trúc chi tiết và đối chiếu với bản thảo](docs/KIEN_TRUC_CHI_TIET_VI.md) và [Nhật ký thay đổi và thí nghiệm](docs/NHAT_KY_THAY_DOI_VI.md) (kết quả, kết quả âm tính, giao thức chống rò rỉ test). Bản thảo và các bài báo đối chứng nằm trong `docs/paper/`.
 
 ## Nội dung repo
 
@@ -24,7 +18,8 @@ results/final/                      Bundle checkpoint/evidence chính
 results/experiments/                Thử nghiệm, ablation và artifact lịch sử
 keypoint_extractor/                 Script trích xuất keypoint RTMW-L từ video
 requirements.txt                    Thư viện Python cần cài
-docs/HANDBOOK_TOAN_DIEN_IPN_NEUROSYMBOLIC_VI.md  Handbook IPN 13 lớp hiện tại
+docs/KIEN_TRUC_CHI_TIET_VI.md                    Kiến trúc chi tiết, đối chiếu bản thảo
+docs/NHAT_KY_THAY_DOI_VI.md                      Nhật ký thay đổi và kết quả thí nghiệm
 scripts/verify_repo.py              Kiểm tra nhanh dữ liệu/checkpoint bắt buộc
 scripts/run_train_fusion.ps1        Chạy lại train mô hình fusion chính
 scripts/run_test_fusion.ps1         Test checkpoint fusion

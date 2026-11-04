@@ -7,4 +7,4 @@ SignBart, ProtoGCN, and published DATE methods.
 
 The manuscript number is not interchangeable with a single local checkpoint.
 For the reproducible validation-selected checkpoint, use the evidence and
-caveats in `docs/DATE27_BASELINE_COMPARISON_2026-10-23_VI.md`.
+caveats in `docs/NHAT_KY_THAY_DOI_VI.md` (mục 6) và `docs/KIEN_TRUC_CHI_TIET_VI.md` (mục 10).

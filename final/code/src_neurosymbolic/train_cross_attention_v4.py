@@ -324,6 +324,15 @@ def evaluate(
     }
 
 
+def selection_score(val_metrics: dict[str, float], select_metric: str) -> float:
+    """Validation score used for checkpoint selection and early stopping."""
+
+    if select_metric == "final_kg_mean_macro_f1":
+        # Rewards epochs where the KG branch is trained too, not only the pretrained neural encoder.
+        return 0.5 * (float(val_metrics["final_macro_f1"]) + float(val_metrics["kg_macro_f1"]))
+    return float(val_metrics[select_metric])
+
+
 def train(args: argparse.Namespace) -> None:
     loader_generator = set_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
@@ -545,7 +554,7 @@ def train(args: argparse.Namespace) -> None:
             test_improved = float(test_metrics["accuracy"]) > best_test_accuracy + args.early_stop_min_delta
             if test_improved:
                 best_test_accuracy = float(test_metrics["accuracy"])
-        val_score = float(val_metrics[args.select_metric])
+        val_score = selection_score(val_metrics, args.select_metric)
         scheduler.step(val_score)
         learning_rates = [group["lr"] for group in optimizer.param_groups]
         improved = val_score > best_accuracy + args.early_stop_min_delta
@@ -682,7 +691,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-best-test", action="store_true")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--select-metric", choices=["accuracy", "macro_f1"], default="accuracy")
+    parser.add_argument(
+        "--select-metric",
+        choices=["accuracy", "macro_f1", "final_kg_mean_macro_f1"],
+        default="accuracy",
+        help="final_kg_mean_macro_f1 averages the validation macro-F1 of the final and KG branches.",
+    )
     return parser.parse_args()
 
 

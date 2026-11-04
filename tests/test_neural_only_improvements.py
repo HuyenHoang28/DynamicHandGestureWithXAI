@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 
@@ -8,7 +7,6 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 NEURAL_ONLY_DIR = ROOT / "final" / "code" / "neural_only_experiments"
-NEURAL_COLAB_NOTEBOOK = ROOT / "notebooks" / "Neural_Only_Improved_Colab.ipynb"
 sys.path.insert(0, str(NEURAL_ONLY_DIR))
 
 from dataset import cache_path_for_source, label_names_from_split  # noqa: E402
@@ -338,34 +336,3 @@ def test_label_names_reject_conflicting_id_or_name_mapping(tmp_path: Path) -> No
 def test_split_overlap_is_rejected_after_path_normalization() -> None:
     with pytest.raises(ValueError, match="overlap"):
         validate_no_split_overlap([("Data\\Clip.JSON", 0)], [("data/clip.json", 0)])
-
-
-def test_neural_colab_notebook_keeps_locked_test_off_and_writes_artifacts() -> None:
-    notebook = json.loads(NEURAL_COLAB_NOTEBOOK.read_text(encoding="utf-8"))
-    code_cells = [
-        "".join(cell.get("source", []))
-        for cell in notebook["cells"]
-        if cell.get("cell_type") == "code"
-    ]
-    code = "\n".join(code_cells)
-    locked_code = next(cell for cell in code_cells if "FINAL_TEST_SEEDS" in cell)
-    assert "RUN_LOCKED_TEST = False" in code
-    assert "FINAL_TEST_SEEDS = SEEDS if RUN_ALL_SEEDS else SEEDS[:1]" in code
-    assert "ALLOW_LOCKED_TEST_OVERWRITE = False" in code
-    assert "locked_test" in code
-    assert "LOCKED_TEST_COMPLETE.json" in code
-    assert "provenance.json" in code
-    assert "checkpoint_sha256" in code
-    assert "test_file_sha256" in code
-    assert "completed_at_utc" in code
-    assert "trained_dirs" not in locked_code
-    assert locked_code.index("report_path.write_text") < locked_code.index("provenance_path.write_text")
-    assert locked_code.index("provenance_path.write_text") < locked_code.index("completion_marker.write_text")
-    for artifact_name in (
-        "test_per_class_metrics.csv",
-        "test_confusion_matrix.csv",
-        "test_report.md",
-    ):
-        assert artifact_name in code
-    assert "predictions.csv" in code
-    assert "Accuracy/Recall" in code
